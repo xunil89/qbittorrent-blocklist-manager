@@ -4,13 +4,13 @@
 # Gestione completa del filtro IP per qBittorrent
 # Uso: ./qbittorrent-blocklist-manager.sh <comando>
 #
-# Versione: 1.0.2
+# Versione: 1.0.3
 # ============================================================
 
 set -euo pipefail
 
 # --- VERSIONE ---
-VERSION="1.0.2"
+VERSION="1.0.3"
 REMOTE_URL="https://raw.githubusercontent.com/xunil89/qbittorrent-blocklist-manager/main/qbittorrent-blocklist-manager.sh"
 INSTALL_DIR="/usr/local/bin"
 SELF_INSTALL_PATH="${INSTALL_DIR}/qbittorrent-blocklist-manager.sh"
@@ -162,7 +162,7 @@ LOG_FILE="/var/log/qbittorrent-blocklist.log"
 
 BLOCKLISTS=(
     "https://raw.githubusercontent.com/Naunter/BT_BlockLists/master/bt_blocklists.gz|Naunter BT Blocklists"
-    "https://www.biglybt.com/blocklist/level1.gz|BiglyBT Level1"
+    # "https://www.biglybt.com/blocklist/level1.gz|BiglyBT Level1"
     "https://github.com/ttgapers/transmission-blocklist/releases/latest/download/blocklist.gz|Transmission Blocklist"
     "https://blocklistproject.github.io/Lists/torrent.txt|BlocklistProject Torrent"
     "https://raw.githubusercontent.com/firehol/blocklist-ipsets/master/firehol_level1.netset|FireHOL Level1"
@@ -173,9 +173,9 @@ BLOCKLISTS=(
     "https://feodotracker.abuse.ch/downloads/ipblocklist.txt|Abuse.ch Feodo"
     "https://feodotracker.abuse.ch/downloads/ipblocklist_recommended.txt|Abuse.ch Feodo Recommended"
     "https://sslbl.abuse.ch/blacklist/sslipblacklist.txt|Abuse.ch SSLBL"
-    "https://urlhaus.abuse.ch/downloads/text/|Abuse.ch URLhaus"
+    # "https://urlhaus.abuse.ch/downloads/text/|Abuse.ch URLhaus"
     "http://rules.emergingthreats.net/blockrules/compromised-ips.txt|Emerging Threats"
-    "https://www.team-cymru.com/Services/Bogons/fullbogons-ipv4.txt|Team Cymru Bogons"
+    # "https://www.team-cymru.com/Services/Bogons/fullbogons-ipv4.txt|Team Cymru Bogons"
     # "http://www.ipdeny.com/ipblocks/data/countries/cn.zone|IPDeny China"
     # "http://www.ipdeny.com/ipblocks/data/countries/ru.zone|IPDeny Russia"
     # "http://www.ipdeny.com/ipblocks/data/countries/ir.zone|IPDeny Iran"
