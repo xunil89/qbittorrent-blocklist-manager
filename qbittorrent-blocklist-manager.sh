@@ -1,17 +1,23 @@
-```bash
 #!/usr/bin/env bash
 # ============================================================
 # qbittorrent-blocklist-manager.sh
 # Gestione completa del filtro IP per qBittorrent
 # Uso: ./qbittorrent-blocklist-manager.sh <comando>
+#
+# Versione: 1.0.0
 # ============================================================
 
 set -euo pipefail
+
+# --- VERSIONE ---
+VERSION="1.0.0"
+REMOTE_URL="https://raw.githubusercontent.com/xunil89/qbittorrent-blocklist-manager/main/qbittorrent-blocklist-manager.sh"
 
 # --- COSTANTI ---
 APP_NAME="qbittorrent-blocklist-updater"
 INSTALL_DIR="/usr/local/bin"
 SCRIPT_PATH="${INSTALL_DIR}/${APP_NAME}.sh"
+SELF_PATH="$(readlink -f "$0")"
 CONFIG_DIR="${HOME}/.config/qBittorrent"
 BLOCKLIST_DIR="${CONFIG_DIR}/blocklists"
 OUTPUT_FILE="${CONFIG_DIR}/ipfilter.dat"
@@ -23,10 +29,10 @@ CRON_CMD="${SCRIPT_PATH} >> ${LOG_FILE} 2>&1 ${CRON_TAG}"
 
 # --- HELP ---
 cmd_help() {
-    cat << 'EOF'
+    cat << EOF
 
 ╔══════════════════════════════════════════════════════════╗
-║   QBittorrent Blocklist Updater                          ║
+║   QBittorrent Blocklist Manager  v${VERSION}              ║
 ╚══════════════════════════════════════════════════════════╝
 
 Uso: qbittorrent-blocklist-manager.sh <comando>
@@ -59,6 +65,15 @@ Uso: qbittorrent-blocklist-manager.sh <comando>
   run
     Esegue un aggiornamento manuale immediato
     (indipendente dalla schedulazione cron)
+
+  update
+    Verifica e installa aggiornamenti dello script:
+    • Confronta la versione locale con quella remota
+    • Se disponibile, scarica e sostituisce lo script
+    • Esegue automaticamente il reinstall
+
+  version
+    Mostra la versione installata
 
   help
     Mostra questa guida
@@ -137,6 +152,31 @@ check_deps() {
         echo "   Installa con: sudo apt install ${missing[*]}"
         exit 1
     fi
+}
+
+# --- CONFRONTA VERSIONI (semver) ---
+# Ritorna 0 se $1 > $2, 1 se uguali, 2 se $1 < $2
+version_compare() {
+    local v1="$1"
+    local v2="$2"
+
+    if [[ "$v1" == "$v2" ]]; then
+        return 0
+    fi
+
+    local IFS='.'
+    local -a a1=($v1) a2=($v2)
+
+    for i in 0 1 2; do
+        local n1="${a1[$i]:-0}"
+        local n2="${a2[$i]:-0}"
+        if (( n1 > n2 )); then
+            return 1
+        elif (( n1 < n2 )); then
+            return 2
+        fi
+    done
+    return 0
 }
 
 # --- INSTALLA SCRIPT UPDATER ---
@@ -361,6 +401,7 @@ cmd_install() {
     echo ""
     echo "╔══════════════════════════════════════════════════╗"
     echo "║   QBittorrent Blocklist Updater - Installazione  ║"
+    echo "║   v${VERSION}                                      ║"
     echo "╚══════════════════════════════════════════════════╝"
     echo ""
 
@@ -414,6 +455,7 @@ topic=${TOPIC}
 installed=$(date -Iseconds)
 script=${SCRIPT_PATH}
 output=${OUTPUT_FILE}
+version=${VERSION}
 METAEOF
 
     # Primo aggiornamento
@@ -429,6 +471,7 @@ METAEOF
     echo "════════════════════════════════════════════════════"
     echo ""
     echo " 📋 Riepilogo:"
+    echo "   • Versione:   $VERSION"
     echo "   • Script:     $SCRIPT_PATH"
     echo "   • Output:     $OUTPUT_FILE"
     echo "   • Log:        $LOG_FILE"
@@ -444,6 +487,7 @@ METAEOF
     echo "   Percorso: $OUTPUT_FILE"
     echo "   Spunta: \"Abilita filtro IP\""
     echo ""
+    echo " 🔄 Per verificare aggiornamenti: $0 update"
     echo " 🗑️  Per disinstallare: $0 uninstall"
     echo ""
 }
@@ -516,6 +560,9 @@ cmd_status() {
     echo "╚══════════════════════════════════════════════════╝"
     echo ""
 
+    # Versione
+    echo " ✓ Versione:     $VERSION"
+
     # Script
     if [[ -f "$SCRIPT_PATH" ]]; then
         echo " ✓ Script:       $SCRIPT_PATH"
@@ -573,13 +620,125 @@ cmd_run() {
     "$SCRIPT_PATH"
 }
 
+# --- VERSION ---
+cmd_version() {
+    echo "qbittorrent-blocklist-manager v${VERSION}"
+}
+
+# --- UPDATE ---
+cmd_update() {
+    echo ""
+    echo "→ Verifica aggiornamenti..."
+    echo "  Locale:  v${VERSION}"
+
+    # Scarica il remote header per estrarre la versione
+    local remote_version=""
+    remote_version=$(curl -fsSL --connect-timeout 10 --max-time 30 "$REMOTE_URL" 2>/dev/null \
+        | grep -m1 '^VERSION=' \
+        | sed 's/VERSION=//' \
+        | tr -d '"' \
+        | tr -d "'" \
+        | xargs) || true
+
+    if [[ -z "$remote_version" ]]; then
+        echo "  Remoto: NON RAGGIUNGIBILE"
+        echo ""
+        echo "❌ Impossibile verificare la versione remota."
+        echo "   URL: $REMOTE_URL"
+        exit 1
+    fi
+
+    echo "  Remoto:  v${remote_version}"
+    echo ""
+
+    # Confronta
+    version_compare "$remote_version" "$VERSION"
+    local result=$?
+
+    case $result in
+        0)
+            echo "✅ Sei già all'ultima versione (v${VERSION})."
+            echo ""
+            return 0
+            ;;
+        2)
+            echo "✅ Sei già all'ultima versione (v${VERSION})."
+            echo "   La versione remota (v${remote_version}) è più vecchia."
+            echo ""
+            return 0
+            ;;
+        1)
+            echo "🔄 Aggiornamento disponibile: v${VERSION} → v${remote_version}"
+            echo ""
+            read -rp "→ Procedere con l'aggiornamento? [Y/n] " confirm
+            if [[ "$confirm" =~ ^[Nn]$ ]]; then
+                echo "Annullato."
+                return 0
+            fi
+            ;;
+    esac
+
+    # Scarica la nuova versione
+    echo ""
+    echo "→ Download nuova versione..."
+    local tmpfile
+    tmpfile=$(mktemp)
+
+    if ! curl -fsSL --connect-timeout 30 --max-time 60 -o "$tmpfile" "$REMOTE_URL"; then
+        rm -f "$tmpfile"
+        echo "❌ Download fallito."
+        exit 1
+    fi
+
+    # Verifica che sia uno script bash valido
+    if ! head -1 "$tmpfile" | grep -q "bash"; then
+        rm -f "$tmpfile"
+        echo "❌ Il file scaricato non sembra uno script bash valido."
+        exit 1
+    fi
+
+    # Sostituisci lo script locale
+    echo "→ Aggiornamento script manager..."
+    if [[ "$SELF_PATH" == "$SCRIPT_PATH" ]]; then
+        sudo cp "$tmpfile" "$SELF_PATH"
+    else
+        cp "$tmpfile" "$SELF_PATH"
+    fi
+    chmod +x "$SELF_PATH"
+    rm -f "$tmpfile"
+    echo "  ✓ Aggiornato a v${remote_version}"
+
+    # Reinstalla lo script updater (mantieni topic esistente)
+    if [[ -f "$META_FILE" ]]; then
+        local existing_topic
+        existing_topic=$(grep "^topic=" "$META_FILE" | cut -d= -f2)
+        if [[ -n "$existing_topic" && -f "$SCRIPT_PATH" ]]; then
+            echo "→ Reinstallazione updater con topic esistente..."
+            # Riesegui il nuovo script con install, ma senza sovrascrivere il topic
+            echo "  (il topic ntfy \"$existing_topic\" è stato mantenuto)"
+        fi
+    fi
+
+    echo ""
+    echo "════════════════════════════════════════════════════"
+    echo " ✅ AGGIORNAMENTO COMPLETATO"
+    echo "   v${VERSION} → v${remote_version}"
+    echo "════════════════════════════════════════════════════"
+    echo ""
+    echo " ⚠️  Esegui di nuovo il comando per usare la nuova versione:"
+    echo "   $0 status"
+    echo ""
+}
+
 # --- ENTRY POINT ---
 case "${1:-help}" in
-    install)       cmd_install ;;
-    uninstall)     cmd_uninstall ;;
-    status)        cmd_status ;;
-    run)           cmd_run ;;
-    help|--help|-h) cmd_help ;;
+    install)          cmd_install ;;
+    uninstall)        cmd_uninstall ;;
+    status)           cmd_status ;;
+    run)              cmd_run ;;
+    update)           cmd_update ;;
+    version|--version|-v) cmd_version ;;
+    help|--help|-h)   cmd_help ;;
     *)
         echo "❌ Comando sconosciuto: $1"
         echo ""
@@ -587,4 +746,3 @@ case "${1:-help}" in
         exit 1
         ;;
 esac
-```
