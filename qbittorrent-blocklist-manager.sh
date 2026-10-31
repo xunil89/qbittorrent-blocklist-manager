@@ -4,7 +4,7 @@
 # Gestione completa del filtro IP per qBittorrent
 # Uso: ./qbittorrent-blocklist-manager.sh <comando>
 #
-# Versione: 1.0.3
+# Versione: 1.0.4
 # ============================================================
 
 set -euo pipefail
@@ -286,7 +286,7 @@ cmd_install() {
 
     if [[ -f "$SCRIPT_PATH" ]]; then
         echo "⚠️  Script già presente: $SCRIPT_PATH"
-        local overwrite; overwrite=$(ask "   Sovrascrivere? [y/N] ")
+        local overwrite; overwrite=$(ask "   Sovrascrivere? la sovrascrittura cambierà il topic ntfy [y/N] ")
         [[ ! "$overwrite" =~ ^[Yy]$ ]] && { echo "Annullato."; exit 0; }
         echo ""
     fi
@@ -536,14 +536,31 @@ cmd_update() {
 bootstrap_if_piped "${1:-install}"
 
 case "${1:-help}" in
-    install)              cmd_install ;;
-    uninstall)            cmd_uninstall ;;
-    status)               cmd_status ;;
-    run)                  cmd_run ;;
-    update)               cmd_update ;;
-    version|--version|-v) cmd_version ;;
-    help|--help|-h)       cmd_help ;;
+    install)
+        cmd_install
+        ;;
+    uninstall)
+        cmd_uninstall
+        ;;
+    status)
+        cmd_status
+        ;;
+    run)
+        cmd_run
+        ;;
+    update)
+        cmd_update
+        ;;
+    version|--version|-v)
+        cmd_version
+        ;;
+    help|--help|-h)
+        cmd_help
+        ;;
     *)
-        echo "❌ Comando sconosciuto: $1"; echo ""
-        cmd_help; exit 1 ;;
+        echo "❌ Comando sconosciuto: $1"
+        echo ""
+        cmd_help
+        exit 1
+        ;;
 esac
