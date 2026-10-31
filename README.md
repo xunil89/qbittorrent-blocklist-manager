@@ -1,40 +1,3 @@
-# 🛡️ qBittorrent Blocklist Manager
-
-Script bash per la gestione automatica di liste IP bloccate in qBittorrent. Aggiorna periodicamente liste di threat intelligence, nodi TOR, peer malevoli e sorgenti governative note per attività anti-P2P.
-
----
-
-## ⚡ Caratteristiche
-
-- **Aggiornamento automatico** ogni 4 ore via cron
-- **Notifiche ntfy** a ogni aggiornamento completato
-- **Topic ntfy randomizzato** ad ogni installazione (nessuna sovrapposizione)
-- **30+ fonti** di threat intelligence integrate
-- **Multi-formato** supporta `.gz`, `.zip`, CIDR, range, IP singoli
-- **Facilmente estendibile** aggiungi/rimuovi liste in un array
-- **Gestione completa** install / uninstall / status / run / update
-- **Auto-update** verifica e installa nuove versioni dello script
-
----
-
-## 📦 Requisiti
-
-| Dipendenza | Uso |
-|------------|-----|
-| `bash` ≥ 4.0 | Script principale |
-| `curl` | Download liste |
-| `flock` | Lock anti-concorrenza |
-| `gunzip` | Decompressione .gz |
-| `unzip` | Decompressione .zip |
-| `python3` | Conversione CIDR → netmask |
-| `file` | Rilevamento formato file |
-
-```bash
-sudo apt install curl python3 file unzip
-```
-
----
-
 ## 🚀 Installazione
 
 ### One-liner (consigliato)
@@ -43,34 +6,43 @@ sudo apt install curl python3 file unzip
 curl -fsSL https://raw.githubusercontent.com/xunil89/qbittorrent-blocklist-manager/main/qbittorrent-blocklist-manager.sh | bash
 ```
 
-Oppure con `wget`:
-
-```bash
-wget -qO- https://raw.githubusercontent.com/xunil89/qbittorrent-blocklist-manager/main/qbittorrent-blocklist-manager.sh | bash
-```
+Lo script si auto-installa in `/usr/local/bin/qbittorrent-blocklist-manager.sh` e poi configura tutto. Le conferme interattive funzionano anche da pipe.
 
 ### Installazione manuale
 
 ```bash
-# Clona il repository
 git clone https://github.com/xunil89/qbittorrent-blocklist-manager.git
 cd qbittorrent-blocklist-manager
-
-# Rendi eseguibile e installa
 chmod +x qbittorrent-blocklist-manager.sh
 sudo ./qbittorrent-blocklist-manager.sh install
 ```
 
 ---
 
+## 📋 Comandi
+
+Dopo l'installazione usa il manager da `/usr/local/bin/`:
+
+```bash
+qbittorrent-blocklist-manager.sh <comando>
+```
+
+| Comando | Descrizione |
+|---------|-------------|
+| `install` | Installa e configura tutto |
+| `uninstall` | Rimuove tutto (cron, updater, file, manager) |
+| `status` | Mostra stato, topic, log |
+| `run` | Aggiornamento manuale immediato |
+| `update` | Verifica e installa aggiornamenti dello script |
+| `version` | Mostra la versione installata |
+| `help` | Mostra la guida |
+
+---
+
 ## 🔄 Aggiornamento dello script
 
 ```bash
-# Verifica se c'è una nuova versione
-./qbittorrent-blocklist-manager.sh update
-
-# Mostra la versione installata
-./qbittorrent-blocklist-manager.sh version
+qbittorrent-blocklist-manager.sh update
 ```
 
 Il comando `update`:
@@ -79,6 +51,26 @@ Il comando `update`:
 3. Confronta con la versione locale (semver)
 4. Se disponibile, scarica e sostituisce lo script
 5. Mantiene il topic ntfy e le configurazioni esistenti
+
+---
+
+## 🗑️ Disinstallazione
+
+### Metodo consigliato (interattivo)
+
+```bash
+qbittorrent-blocklist-manager.sh uninstall
+```
+
+Chiede conferma per ogni componente (ipfilter.dat, log, manager stesso).
+
+### One-liner (non interattivo)
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/xunil89/qbittorrent-blocklist-manager/main/uninstall.sh | bash
+```
+
+Rimuove tutto in un colpo solo senza conferme.
 
 ---
 
@@ -92,20 +84,6 @@ Strumenti → Opzioni → BitTorrent → Filtro IP
 |-------|--------|
 | Percorso | `~/.config/qBittorrent/ipfilter.dat` |
 | Abilita filtro IP | ✅ Spuntato |
-
----
-
-## 📋 Comandi
-
-| Comando | Descrizione |
-|---------|-------------|
-| `install` | Installa e configura tutto |
-| `uninstall` | Rimuove tutto |
-| `status` | Mostra stato, topic, log |
-| `run` | Aggiornamento manuale immediato |
-| `update` | Verifica e installa aggiornamenti dello script |
-| `version` | Mostra la versione installata |
-| `help` | Mostra la guida |
 
 ---
 
@@ -195,20 +173,11 @@ BLOCKLISTS=(
 
 | Percorso | Descrizione |
 |----------|-------------|
+| `/usr/local/bin/qbittorrent-blocklist-manager.sh` | Script manager |
 | `/usr/local/bin/qbittorrent-blocklist-updater.sh` | Script updater |
 | `~/.config/qBittorrent/ipfilter.dat` | Liste IP bloccate |
 | `~/.config/qBittorrent/.blocklist-meta` | Metadati installazione |
 | `/var/log/qbittorrent-blocklist.log` | Log operativo |
-
----
-
-## 🗑️ Disinstallazione
-
-```bash
-./qbittorrent-blocklist-manager.sh uninstall
-```
-
-Chiede conferma prima di rimuovere `ipfilter.dat` e il log.
 
 ---
 
@@ -244,7 +213,7 @@ Chiede conferma prima di rimuovere `ipfilter.dat` e il log.
 ## 🏷️ Versionamento
 
 Lo script usa [Semantic Versioning](https://semver.org/):
-- `MAJOR.MINOR.PATCH` (es. `1.0.0`)
+- `MAJOR.MINOR.PATCH` (es. `1.0.2`)
 - Il numero è definito nella variabile `VERSION=` all'inizio dello script
 - Il comando `update` confronta la versione locale con quella remota
 
