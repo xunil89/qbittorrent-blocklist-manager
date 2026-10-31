@@ -1,4 +1,3 @@
-```markdown
 # 🛡️ qBittorrent Blocklist Manager
 
 Script bash per la gestione automatica di liste IP bloccate in qBittorrent. Aggiorna periodicamente liste di threat intelligence, nodi TOR, peer malevoli e sorgenti governative note per attività anti-P2P.
@@ -13,7 +12,8 @@ Script bash per la gestione automatica di liste IP bloccate in qBittorrent. Aggi
 - **30+ fonti** di threat intelligence integrate
 - **Multi-formato** supporta `.gz`, `.zip`, CIDR, range, IP singoli
 - **Facilmente estendibile** aggiungi/rimuovi liste in un array
-- **Gestione completa** install / uninstall / status / run
+- **Gestione completa** install / uninstall / status / run / update
+- **Auto-update** verifica e installa nuove versioni dello script
 
 ---
 
@@ -40,20 +40,20 @@ sudo apt install curl python3 file unzip
 ### One-liner (consigliato)
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/TUO_USERNAME/qbittorrent-blocklist-manager/main/qbittorrent-blocklist-manager.sh | bash
+curl -fsSL https://raw.githubusercontent.com/xunil89/qbittorrent-blocklist-manager/main/qbittorrent-blocklist-manager.sh | bash
 ```
 
 Oppure con `wget`:
 
 ```bash
-wget -qO- https://raw.githubusercontent.com/TUO_USERNAME/qbittorrent-blocklist-manager/main/qbittorrent-blocklist-manager.sh | bash
+wget -qO- https://raw.githubusercontent.com/xunil89/qbittorrent-blocklist-manager/main/qbittorrent-blocklist-manager.sh | bash
 ```
 
 ### Installazione manuale
 
 ```bash
 # Clona il repository
-git clone https://github.com/TUO_USERNAME/qbittorrent-blocklist-manager.git
+git clone https://github.com/xunil89/qbittorrent-blocklist-manager.git
 cd qbittorrent-blocklist-manager
 
 # Rendi eseguibile e installa
@@ -61,21 +61,24 @@ chmod +x qbittorrent-blocklist-manager.sh
 sudo ./qbittorrent-blocklist-manager.sh install
 ```
 
-### Aggiornamento
+---
+
+## 🔄 Aggiornamento dello script
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/TUO_USERNAME/qbittorrent-blocklist-manager/main/qbittorrent-blocklist-manager.sh | bash -s -- install
+# Verifica se c'è una nuova versione
+./qbittorrent-blocklist-manager.sh update
+
+# Mostra la versione installata
+./qbittorrent-blocklist-manager.sh version
 ```
 
-Rieseguire `install` sovrascrive lo script updater con l'ultima versione, mantenendo topic e configurazioni esistenti.
-
-### Disinstallazione
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/TUO_USERNAME/qbittorrent-blocklist-manager/main/qbittorrent-blocklist-manager.sh | bash -s -- uninstall
-```
-
-> **Nota:** sostituisci `TUO_USERNAME` con il tuo username GitHub e `main` con il nome del branch principale se diverso. Se il repo è privato, il one-liner non funziona — serve il clone con autenticazione.
+Il comando `update`:
+1. Scarica l'header dello script remoto
+2. Estrae il numero di versione (`VERSION=`)
+3. Confronta con la versione locale (semver)
+4. Se disponibile, scarica e sostituisce lo script
+5. Mantiene il topic ntfy e le configurazioni esistenti
 
 ---
 
@@ -100,6 +103,8 @@ Strumenti → Opzioni → BitTorrent → Filtro IP
 | `uninstall` | Rimuove tutto |
 | `status` | Mostra stato, topic, log |
 | `run` | Aggiornamento manuale immediato |
+| `update` | Verifica e installa aggiornamenti dello script |
+| `version` | Mostra la versione installata |
 | `help` | Mostra la guida |
 
 ---
@@ -216,6 +221,7 @@ Chiede conferma prima di rimuovere `ipfilter.dat` e il log.
 | Liste che falliscono sempre | Controlla il log: `cat /var/log/qbittorrent-blocklist.log` |
 | qBittorrent non carica il file | Verifica il percorso nelle impostazioni |
 | Troppe regole (lento) | Rimuovi FireHOL Level2 o le liste geografiche |
+| `update` non raggiunge il remoto | Verifica la connessione e l'URL nel repo |
 
 ---
 
@@ -235,6 +241,15 @@ Chiede conferma prima di rimuovere `ipfilter.dat` e il log.
 
 ---
 
+## 🏷️ Versionamento
+
+Lo script usa [Semantic Versioning](https://semver.org/):
+- `MAJOR.MINOR.PATCH` (es. `1.0.0`)
+- Il numero è definito nella variabile `VERSION=` all'inizio dello script
+- Il comando `update` confronta la versione locale con quella remota
+
+---
+
 ## ⚖️ Note Legali
 
 - Questo script blocca **peer in entrata** su qBittorrent. Non impedisce al tuo IP di essere bloccato da altri.
@@ -247,5 +262,3 @@ Chiede conferma prima di rimuovere `ipfilter.dat` e il log.
 
 MIT — usa, modifica, distribuisci liberamente.
 ```
-
-Copia tutto il blocco e salvalo come `README.md` nella root del repo.
