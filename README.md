@@ -3,7 +3,11 @@
 ### One-liner (consigliato)
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/xunil89/qbittorrent-blocklist-manager/main/qbittorrent-blocklist-manager.sh | bash
+curl -fsSL -o qbittorrent-blocklist-manager.sh \
+  https://raw.githubusercontent.com/xunil89/qbittorrent-blocklist-manager/refs/heads/main/qbittorrent-blocklist-manager.sh
+bash -n qbittorrent-blocklist-manager.sh && echo "OK sintassi"
+chmod +x qbittorrent-blocklist-manager.sh
+sudo ./qbittorrent-blocklist-manager.sh install
 ```
 
 Lo script si auto-installa in `/usr/local/bin/qbittorrent-blocklist-manager.sh` e poi configura tutto. Le conferme interattive funzionano anche da pipe.
@@ -21,8 +25,6 @@ sudo ./qbittorrent-blocklist-manager.sh install
 
 ## 📋 Comandi
 
-Dopo l'installazione usa il manager da `/usr/local/bin/`:
-
 ```bash
 qbittorrent-blocklist-manager.sh <comando>
 ```
@@ -30,6 +32,7 @@ qbittorrent-blocklist-manager.sh <comando>
 | Comando | Descrizione |
 |---------|-------------|
 | `install` | Installa e configura tutto |
+| `settings` | Modifica preferenze (notifiche, intervalli, liste) |
 | `uninstall` | Rimuove tutto (cron, updater, file, manager) |
 | `status` | Mostra stato, topic, log |
 | `run` | Aggiornamento manuale immediato |
