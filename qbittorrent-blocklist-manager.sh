@@ -2,12 +2,12 @@
 # ============================================================
 # qbittorrent-blocklist-manager.sh
 # Gestione completa del filtro IP per qBittorrent
-# Versione: 2.2.0
+# Versione: 2.2.1
 # ============================================================
 
 set -euo pipefail
 
-VERSION="2.2.0"
+VERSION="2.2.1"
 REMOTE_URL="https://raw.githubusercontent.com/xunil89/qbittorrent-blocklist-manager/refs/heads/main/qbittorrent-blocklist-manager.sh"
 INSTALL_DIR="/usr/local/bin"
 SELF_INSTALL_PATH="${INSTALL_DIR}/qbittorrent-blocklist-manager.sh"
