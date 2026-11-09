@@ -1,16 +1,3 @@
-Sì, ho capito. Riepilogo per sicurezza prima di procedere:
-
-1. **Wizard interattivo** usato sia in `install` sia nel nuovo comando `settings`.
-2. **Modalità notifica**: sempre / solo errori / solo modifiche+errori.
-3. **Toggle** separato per le notifiche di aggiornamento script (sì/no).
-4. **Intervallo** ricerca aggiornamenti script (ore).
-5. **Intervallo** update liste (ore).
-6. **Checklist** delle liste predefinite (attiva/disattiva con numero).
-7. **Aggiunta** di link personalizzati.
-
-Ho ricostruito lo script da zero, verificato sintassi, ereditarietà variabili, gestione array vuoti, escaping delle liste. Un punto che ho dovuto decidere: le liste commentate (`#`) ora diventano **righe attive/disattivate** tramite la checklist, quindi `install` e `settings` salvano sempre l'elenco completo e lo stato attivo/disattivo è ciò che conta.
-
-```bash
 #!/usr/bin/env bash
 # ============================================================
 # qbittorrent-blocklist-manager.sh
