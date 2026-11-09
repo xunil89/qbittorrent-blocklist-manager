@@ -782,3 +782,69 @@ cmd_update() {
 
 # --- HELP ---
 cmd_help() {
+    cat << EOF
+
+╔══════════════════════════════════════════════════════════╗
+║   QBittorrent Blocklist Manager  v${VERSION}              ║
+╚══════════════════════════════════════════════════════════╝
+
+Uso: qbittorrent-blocklist-manager.sh <comando>
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ COMANDI
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  install    Installa e configura tutto
+  uninstall  Rimuove tutto (cron, updater, file, manager)
+  status     Mostra stato, config, topic, log
+  run        Forza un aggiornamento liste immediato
+  lists      Gestisci le liste di blocco (aggiungi/rimuovi/test)
+  config     Imposta intervalli e modalità notifica
+  update     Verifica e installa aggiornamenti dello script
+  version    Mostra la versione installata
+  help       Mostra questa guida
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+EOF
+}
+
+# --- ENTRY POINT ---
+bootstrap_if_piped "${1:-help}"
+
+case "${1:-help}" in
+    install)
+        cmd_install
+        ;;
+    uninstall)
+        cmd_uninstall
+        ;;
+    status)
+        cmd_status
+        ;;
+    run)
+        cmd_run
+        ;;
+    lists)
+        cmd_lists
+        ;;
+    config)
+        cmd_config
+        ;;
+    update)
+        cmd_update
+        ;;
+    version|--version|-v)
+        cmd_version
+        ;;
+    help|--help|-h)
+        cmd_help
+        ;;
+    *)
+        echo "❌ Comando sconosciuto: $1"
+        echo ""
+        cmd_help
+        exit 1
+        ;;
+esac
+
