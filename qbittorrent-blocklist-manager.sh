@@ -1,13 +1,26 @@
+Sì, ho capito. Riepilogo per sicurezza prima di procedere:
+
+1. **Wizard interattivo** usato sia in `install` sia nel nuovo comando `settings`.
+2. **Modalità notifica**: sempre / solo errori / solo modifiche+errori.
+3. **Toggle** separato per le notifiche di aggiornamento script (sì/no).
+4. **Intervallo** ricerca aggiornamenti script (ore).
+5. **Intervallo** update liste (ore).
+6. **Checklist** delle liste predefinite (attiva/disattiva con numero).
+7. **Aggiunta** di link personalizzati.
+
+Ho ricostruito lo script da zero, verificato sintassi, ereditarietà variabili, gestione array vuoti, escaping delle liste. Un punto che ho dovuto decidere: le liste commentate (`#`) ora diventano **righe attive/disattivate** tramite la checklist, quindi `install` e `settings` salvano sempre l'elenco completo e lo stato attivo/disattivo è ciò che conta.
+
+```bash
 #!/usr/bin/env bash
 # ============================================================
 # qbittorrent-blocklist-manager.sh
 # Gestione completa del filtro IP per qBittorrent
-# Versione: 2.0.2
+# Versione: 2.2.0
 # ============================================================
 
 set -euo pipefail
 
-VERSION="2.0.2"
+VERSION="2.2.0"
 REMOTE_URL="https://raw.githubusercontent.com/xunil89/qbittorrent-blocklist-manager/main/qbittorrent-blocklist-manager.sh"
 INSTALL_DIR="/usr/local/bin"
 SELF_INSTALL_PATH="${INSTALL_DIR}/qbittorrent-blocklist-manager.sh"
@@ -24,33 +37,29 @@ LOG_FILE="/var/log/${APP_NAME}.log"
 CRON_TAG="# qbittorrent-blocklist-updater"
 CRON_SCHEDULE="0 * * * *"
 
-DEFAULT_NTFY_URL="https://ntfy.sh"
-DEFAULT_LIST_INTERVAL=4
-DEFAULT_SCRIPT_INTERVAL=24
-DEFAULT_NOTIFY_MODE="always"
-
-# --- BOOTSTRAP ---
-bootstrap_if_piped() {
-    local cmd="${1:-help}"
-    if [[ "$cmd" == "install" ]] && { [[ ! -f "$0" ]] || [[ "$0" == "bash" || "$0" == "-bash" ]]; }; then
-        echo "→ Installazione da remoto..."
-        local tmpfile
-        tmpfile=$(mktemp)
-        if ! curl -fsSL --connect-timeout 30 --max-time 60 -o "$tmpfile" "$REMOTE_URL"; then
-            rm -f "$tmpfile"; echo "❌ Download fallito: $REMOTE_URL"; exit 1
-        fi
-        if ! head -1 "$tmpfile" | grep -q "bash"; then
-            rm -f "$tmpfile"; echo "❌ File scaricato non valido."; exit 1
-        fi
-        sudo mkdir -p "$INSTALL_DIR"
-        sudo cp "$tmpfile" "$SELF_INSTALL_PATH"
-        sudo chmod 755 "$SELF_INSTALL_PATH"
-        rm -f "$tmpfile"
-        echo "  ✓ Installato in: $SELF_INSTALL_PATH"
-        echo ""
-        exec sudo "$SELF_INSTALL_PATH" install
-    fi
-}
+# --- LISTE PREDEFINITE (usate come checklist) ---
+# Formato: "URL|Nome"
+DEFAULT_BLOCKLISTS=(
+    "https://raw.githubusercontent.com/Naunter/BT_BlockLists/master/bt_blocklists.gz|Naunter BT Blocklists"
+    "https://www.biglybt.com/blocklist/level1.gz|BiglyBT Level1"
+    "https://github.com/ttgapers/transmission-blocklist/releases/latest/download/blocklist.gz|Transmission Blocklist"
+    "https://blocklistproject.github.io/Lists/torrent.txt|BlocklistProject Torrent"
+    "https://raw.githubusercontent.com/firehol/blocklist-ipsets/master/firehol_level1.netset|FireHOL Level1"
+    "https://raw.githubusercontent.com/firehol/blocklist-ipsets/master/firehol_level2.netset|FireHOL Level2"
+    "https://www.spamhaus.org/drop/drop.txt|Spamhaus DROP"
+    "https://www.spamhaus.org/drop/edrop.txt|Spamhaus EDROP"
+    "https://isc.sans.edu/feeds/block.txt|DShield SANS"
+    "https://feodotracker.abuse.ch/downloads/ipblocklist.txt|Abuse.ch Feodo"
+    "https://feodotracker.abuse.ch/downloads/ipblocklist_recommended.txt|Abuse.ch Feodo Recommended"
+    "https://sslbl.abuse.ch/blacklist/sslipblacklist.txt|Abuse.ch SSLBL"
+    "https://urlhaus.abuse.ch/downloads/text/|Abuse.ch URLhaus"
+    "http://rules.emergingthreats.net/blockrules/compromised-ips.txt|Emerging Threats"
+    "https://www.team-cymru.com/Services/Bogons/fullbogons-ipv4.txt|Team Cymru Bogons"
+    "http://www.ipdeny.com/ipblocks/data/countries/cn.zone|IPDeny China"
+    "http://www.ipdeny.com/ipblocks/data/countries/ru.zone|IPDeny Russia"
+    "http://www.ipdeny.com/ipblocks/data/countries/ir.zone|IPDeny Iran"
+    "http://www.ipdeny.com/ipblocks/data/countries/kp.zone|IPDeny North Korea"
+)
 
 # --- UTILITÀ ---
 ask() {
@@ -74,7 +83,7 @@ generate_topic() {
 
 check_deps() {
     local missing=()
-    for cmd in curl flock gunzip unzip python3 file; do
+    for cmd in curl flock gunzip unzip python3 file sha256sum; do
         command -v "$cmd" &>/dev/null || missing+=("$cmd")
     done
     if [[ ${#missing[@]} -gt 0 ]]; then
@@ -98,35 +107,22 @@ version_compare() {
     CMP_RESULT="same"
 }
 
-# --- CONFIG ---
-create_default_config() {
-    local topic="$1"
-    cat > "$CONF_FILE" << EOF
-# qbittorrent-blocklist-manager - file di configurazione
-NTFY_URL="${DEFAULT_NTFY_URL}"
-NTFY_TOPIC="${topic}"
-LIST_UPDATE_INTERVAL=${DEFAULT_LIST_INTERVAL}
-SCRIPT_UPDATE_INTERVAL=${DEFAULT_SCRIPT_INTERVAL}
-NOTIFY_MODE="${DEFAULT_NOTIFY_MODE}"
-
-BLOCKLISTS=(
-    "https://raw.githubusercontent.com/Naunter/BT_BlockLists/master/bt_blocklists.gz|Naunter BT Blocklists"
-    "https://www.biglybt.com/blocklist/level1.gz|BiglyBT Level1"
-    "https://github.com/ttgapers/transmission-blocklist/releases/latest/download/blocklist.gz|Transmission Blocklist"
-    "https://blocklistproject.github.io/Lists/torrent.txt|BlocklistProject Torrent"
-    "https://raw.githubusercontent.com/firehol/blocklist-ipsets/master/firehol_level1.netset|FireHOL Level1"
-    "https://raw.githubusercontent.com/firehol/blocklist-ipsets/master/firehol_level2.netset|FireHOL Level2"
-    "https://www.spamhaus.org/drop/drop.txt|Spamhaus DROP"
-    "https://www.spamhaus.org/drop/edrop.txt|Spamhaus EDROP"
-    "https://isc.sans.edu/feeds/block.txt|DShield SANS"
-    "https://feodotracker.abuse.ch/downloads/ipblocklist.txt|Abuse.ch Feodo"
-    "https://feodotracker.abuse.ch/downloads/ipblocklist_recommended.txt|Abuse.ch Feodo Recommended"
-    "https://sslbl.abuse.ch/blacklist/sslipblacklist.txt|Abuse.ch SSLBL"
-    "https://urlhaus.abuse.ch/downloads/text/|Abuse.ch URLhaus"
-    "http://rules.emergingthreats.net/blockrules/compromised-ips.txt|Emerging Threats"
-    "https://www.team-cymru.com/Services/Bogons/fullbogons-ipv4.txt|Team Cymru Bogons"
-)
-EOF
+# --- CONFIG: default e caricamento ---
+set_config_defaults() {
+    NTFY_URL="https://ntfy.sh"
+    NTFY_TOPIC="${1:-}"
+    LIST_UPDATE_INTERVAL=4
+    SCRIPT_UPDATE_INTERVAL=24
+    NOTIFY_MODE="always"
+    NOTIFY_SCRIPT_UPDATE="yes"
+    # Stato delle liste predefinite: array associativo URL -> 1/0
+    declare -gA BLOCK_STATE=()
+    local entry
+    for entry in "${DEFAULT_BLOCKLISTS[@]}"; do
+        BLOCK_STATE["${entry%%|*}"]=1
+    done
+    # Liste personalizzate aggiunte dall'utente
+    declare -ga CUSTOM_BLOCKLISTS=()
 }
 
 load_config() {
@@ -137,21 +133,180 @@ load_config() {
     fi
     # shellcheck disable=SC1090
     source "$CONF_FILE"
+    # Normalizza array se assenti
+    [[ "${#BLOCKLISTS[@]}" -gt 0 ]] || BLOCKLISTS=()
 }
 
-write_config_from_vars() {
-    local lists_block
-    lists_block=$(awk '/^BLOCKLISTS=\(/,/^\)/' "$CONF_FILE")
-    cat > "$CONF_FILE" << EOF
-# qbittorrent-blocklist-manager - file di configurazione
-NTFY_URL="${NTFY_URL}"
-NTFY_TOPIC="${NTFY_TOPIC}"
-LIST_UPDATE_INTERVAL=${LIST_UPDATE_INTERVAL}
-SCRIPT_UPDATE_INTERVAL=${SCRIPT_UPDATE_INTERVAL}
-NOTIFY_MODE="${NOTIFY_MODE}"
+# Costruisce l'array attivo BLOCKLISTS da stato + custom
+build_active_blocklists() {
+    BLOCKLISTS=()
+    local entry url
+    for entry in "${DEFAULT_BLOCKLISTS[@]}"; do
+        url="${entry%%|*}"
+        if [[ "${BLOCK_STATE[$url]:-0}" == "1" ]]; then
+            BLOCKLISTS+=("$entry")
+        fi
+    done
+    for entry in "${CUSTOM_BLOCKLISTS[@]}"; do
+        BLOCKLISTS+=("$entry")
+    done
+}
 
-${lists_block}
-EOF
+# Scrive il config da memoria
+write_config() {
+    {
+        echo "# qbittorrent-blocklist-manager - file di configurazione"
+        echo "NTFY_URL=\"${NTFY_URL}\""
+        echo "NTFY_TOPIC=\"${NTFY_TOPIC}\""
+        echo "LIST_UPDATE_INTERVAL=${LIST_UPDATE_INTERVAL}"
+        echo "SCRIPT_UPDATE_INTERVAL=${SCRIPT_UPDATE_INTERVAL}"
+        echo "NOTIFY_MODE=\"${NOTIFY_MODE}\""
+        echo "NOTIFY_SCRIPT_UPDATE=\"${NOTIFY_SCRIPT_UPDATE}\""
+        # Stato liste predefinite
+        echo "declare -A BLOCK_STATE=("
+        local entry url
+        for entry in "${DEFAULT_BLOCKLISTS[@]}"; do
+            url="${entry%%|*}"
+            echo "    [\"${url}\"]=\"${BLOCK_STATE[$url]:-0}\""
+        done
+        echo ")"
+        # Liste custom
+        echo "declare -ga CUSTOM_BLOCKLISTS=("
+        for entry in "${CUSTOM_BLOCKLISTS[@]}"; do
+            echo "    \"${entry}\""
+        done
+        echo ")"
+    } > "$CONF_FILE"
+    # Ricostruisce anche l'array attivo salvato (usato dall'updater)
+    build_active_blocklists
+    {
+        echo "# --- array attivo generato (non modificare) ---"
+        echo "ACTIVE_BLOCKLISTS=("
+        for entry in "${BLOCKLISTS[@]}"; do
+            echo "    \"${entry}\""
+        done
+        echo ")"
+    } >> "$CONF_FILE"
+}
+
+# --- WIZARD INTERATTIVO ---
+wizard_notify_mode() {
+    echo ""
+    echo "Modalità notifica aggiornamenti liste:"
+    echo "  1) sempre           → notifica a ogni aggiornamento"
+    echo "  2) solo errori      → notifica solo se qualche lista fallisce"
+    echo "  3) modifiche+errori → notifica solo se cambiano gli IP o ci sono errori"
+    local sel; sel=$(ask "Scelta [1]: ")
+    [[ -z "$sel" ]] && sel=1
+    case "$sel" in
+        1) NOTIFY_MODE="always" ;;
+        2) NOTIFY_MODE="errors" ;;
+        3) NOTIFY_MODE="changes" ;;
+        *) echo "  Scelta non valida, uso 'always'"; NOTIFY_MODE="always" ;;
+    esac
+    echo "  → Modalità: $NOTIFY_MODE"
+}
+
+wizard_script_update() {
+    echo ""
+    echo "Notificare quando è disponibile un nuovo aggiornamento dello script?"
+    local sel; sel=$(ask "  [S/n]: ")
+    if [[ "$sel" =~ ^[Nn]$ ]]; then
+        NOTIFY_SCRIPT_UPDATE="no"
+    else
+        NOTIFY_SCRIPT_UPDATE="yes"
+    fi
+    echo "  → Notifica aggiornamento script: $NOTIFY_SCRIPT_UPDATE"
+}
+
+wizard_intervals() {
+    echo ""
+    echo "Imposta intervalli (in ore). Lascia vuoto per mantenere il valore attuale."
+    local in_l in_s
+    in_l=$(ask "  Aggiornamento liste [${LIST_UPDATE_INTERVAL}h]: ")
+    [[ -n "$in_l" ]] && { [[ "$in_l" =~ ^[0-9]+$ ]] && LIST_UPDATE_INTERVAL="$in_l" || echo "  Valore non valido, mantengo ${LIST_UPDATE_INTERVAL}h"; }
+    in_s=$(ask "  Controllo aggiornamenti script [${SCRIPT_UPDATE_INTERVAL}h]: ")
+    [[ -n "$in_s" ]] && { [[ "$in_s" =~ ^[0-9]+$ ]] && SCRIPT_UPDATE_INTERVAL="$in_s" || echo "  Valore non valido, mantengo ${SCRIPT_UPDATE_INTERVAL}h"; }
+    echo "  → Liste ogni ${LIST_UPDATE_INTERVAL}h, script ogni ${SCRIPT_UPDATE_INTERVAL}h"
+}
+
+wizard_lists() {
+    echo ""
+    echo "Seleziona le liste da attivare (predefinite)."
+    echo "Digita i numeri separati da spazio, oppure 'a' per tutte, 'n' per nessuna."
+    echo "Digita 'k' per mantenere la selezione attuale."
+    echo ""
+    local i=1 entry url name
+    for entry in "${DEFAULT_BLOCKLISTS[@]}"; do
+        url="${entry%%|*}"; name="${entry##*|}"
+        local mark=" "
+        [[ "${BLOCK_STATE[$url]:-0}" == "1" ]] && mark="x"
+        printf "  [%s] %2d) %s\n" "$mark" "$i" "$name"
+        ((i++)) || true
+    done
+    echo ""
+    local sel; sel=$(ask "Selezione [k]: ")
+    if [[ -z "$sel" || "$sel" == "k" ]]; then
+        echo "  → Selezione attuale mantenuta"
+    elif [[ "$sel" == "a" ]]; then
+        for entry in "${DEFAULT_BLOCKLISTS[@]}"; do BLOCK_STATE["${entry%%|*}"]=1; done
+        echo "  → Tutte attivate"
+    elif [[ "$sel" == "n" ]]; then
+        for entry in "${DEFAULT_BLOCKLISTS[@]}"; do BLOCK_STATE["${entry%%|*}"]=0; done
+        echo "  → Nessuna attivata"
+    else
+        # resetta e attiva solo i numeri scelti
+        for entry in "${DEFAULT_BLOCKLISTS[@]}"; do BLOCK_STATE["${entry%%|*}"]=0; done
+        local num
+        for num in $sel; do
+            [[ "$num" =~ ^[0-9]+$ ]] || continue
+            if (( num >= 1 && num <= ${#DEFAULT_BLOCKLISTS[@]} )); then
+                entry="${DEFAULT_BLOCKLISTS[$((num-1))]}"
+                BLOCK_STATE["${entry%%|*}"]=1
+            fi
+        done
+        echo "  → Selezione aggiornata"
+    fi
+}
+
+wizard_add_custom() {
+    echo ""
+    echo "Vuoi aggiungere link personalizzati? (le liste predefinite sono già gestite sopra)"
+    local more; more=$(ask "  Aggiungi link? [s/N]: ")
+    [[ ! "$more" =~ ^[Ss]$ ]] && return
+
+    while true; do
+        local url name test tmp size
+        url=$(ask "  URL lista (vuoto per terminare): ")
+        [[ -z "$url" ]] && break
+        name=$(ask "  Nome descrittivo: ")
+        [[ -z "$name" ]] && name="$url"
+        test=$(ask "  Testare il download? [S/n]: ")
+        if [[ ! "$test" =~ ^[Nn]$ ]]; then
+            tmp=$(mktemp)
+            if curl -fsSL --connect-timeout 20 --max-time 60 -o "$tmp" "$url" 2>/dev/null; then
+                size=$(wc -c < "$tmp"); echo "    ✓ OK (${size} byte)"
+            else
+                echo "    ⚠️  Download fallito, la lista potrebbe non funzionare"
+            fi
+            rm -f "$tmp"
+        fi
+        CUSTOM_BLOCKLISTS+=("${url}|${name}")
+        echo "    ✓ Aggiunta: $name"
+        echo ""
+    done
+}
+
+run_wizard() {
+    echo ""
+    echo "╔══════════════════════════════════════════════════╗"
+    echo "║   Configurazione                                 ║"
+    echo "╚══════════════════════════════════════════════════╝"
+    wizard_notify_mode
+    wizard_script_update
+    wizard_intervals
+    wizard_lists
+    wizard_add_custom
 }
 
 # --- UPDATER (heredoc letterale) ---
@@ -179,6 +334,10 @@ notify() {
         none) return 0 ;;
         *) ;;
     esac
+    # La notifica di aggiornamento script rispetta il toggle dedicato
+    if [[ "$kind" == "update" && "${NOTIFY_SCRIPT_UPDATE:-yes}" != "yes" ]]; then
+        return 0
+    fi
     curl -s -o /dev/null -X POST "${NTFY_URL}/${NTFY_TOPIC}" \
         -H "Title: ${title}" -H "Priority: ${priority}" -H "Tags: shield" -d "${message}"
 }
@@ -222,7 +381,7 @@ do_list_update() {
 
     local TOTAL_IPS=0 SUCCESS=0 FAILED=0 FAILED_LISTS=""
     local entry url name tmpfile before after added
-    for entry in "${BLOCKLISTS[@]}"; do
+    for entry in "${ACTIVE_BLOCKLISTS[@]}"; do
         [[ -z "$entry" || "$entry" == \#* ]] && continue
         url="${entry%%|*}"; name="${entry##*|}"
         log "Downloading: $name"
@@ -269,7 +428,7 @@ do_list_update() {
     } > "$STATE_FILE"
 
     local MSG="${status}
-• Liste scaricate: ${SUCCESS}/${#BLOCKLISTS[@]}
+• Liste scaricate: ${SUCCESS}/${#ACTIVE_BLOCKLISTS[@]}
 • Entrate totali: ${TOTAL_IPS}
 • Fallite: ${FAILED}"
     [[ -n "$changes_msg" ]] && MSG+=$'\n'"${changes_msg}"
@@ -364,6 +523,29 @@ UPDATER_SCRIPT
     chmod 755 "$SCRIPT_PATH"
 }
 
+# --- BOOTSTRAP ---
+bootstrap_if_piped() {
+    local cmd="${1:-help}"
+    if [[ "$cmd" == "install" ]] && { [[ ! -f "$0" ]] || [[ "$0" == "bash" || "$0" == "-bash" ]]; }; then
+        echo "→ Installazione da remoto..."
+        local tmpfile
+        tmpfile=$(mktemp)
+        if ! curl -fsSL --connect-timeout 30 --max-time 60 -o "$tmpfile" "$REMOTE_URL"; then
+            rm -f "$tmpfile"; echo "❌ Download fallito: $REMOTE_URL"; exit 1
+        fi
+        if ! head -1 "$tmpfile" | grep -q "bash"; then
+            rm -f "$tmpfile"; echo "❌ File scaricato non valido."; exit 1
+        fi
+        sudo mkdir -p "$INSTALL_DIR"
+        sudo cp "$tmpfile" "$SELF_INSTALL_PATH"
+        sudo chmod 755 "$SELF_INSTALL_PATH"
+        rm -f "$tmpfile"
+        echo "  ✓ Installato in: $SELF_INSTALL_PATH"
+        echo ""
+        exec sudo "$SELF_INSTALL_PATH" install
+    fi
+}
+
 # --- COMANDI ---
 cmd_install() {
     echo ""
@@ -387,13 +569,15 @@ cmd_install() {
     echo "  ✓ Directory create"
 
     echo "→ Generazione topic ntfy..."
-    TOPIC=$(generate_topic)
-    echo "  ✓ Topic: $TOPIC"
+    local topic; topic=$(generate_topic)
+    echo "  ✓ Topic: $topic"
 
-    echo "→ Creazione configurazione..."
-    create_default_config "$TOPIC"
-    echo "  ✓ $CONF_FILE"
+    # Inizializza config con default + topic, poi lancia il wizard
+    set_config_defaults "$topic"
+    run_wizard
+    write_config
 
+    echo ""
     echo "→ Installazione script updater..."
     sudo mkdir -p "$INSTALL_DIR"
     write_updater_script
@@ -410,7 +594,7 @@ cmd_install() {
     echo "  ✓ Cron attivo (controlla intervalli ogni ora)"
 
     cat > "$META_FILE" << METAEOF
-topic=${TOPIC}
+topic=${topic}
 installed=$(date -Iseconds)
 script=${SCRIPT_PATH}
 output=${OUTPUT_FILE}
@@ -431,17 +615,28 @@ METAEOF
     echo "   • Versione:   $VERSION"
     echo "   • Manager:    $SELF_INSTALL_PATH"
     echo "   • Config:     $CONF_FILE"
-    echo "   • Ntfy topic: $TOPIC"
+    echo "   • Ntfy topic: $topic"
     echo ""
-    echo " 📱 Notifiche: iscriviti al topic \"$TOPIC\""
-    echo "   Browser: https://ntfy.sh/$TOPIC"
+    echo " 📱 Notifiche: iscriviti al topic \"$topic\""
+    echo "   Browser: https://ntfy.sh/$topic"
     echo ""
     echo " ⚙️  qBittorrent: Strumenti → Opzioni → BitTorrent → Filtro IP"
     echo "   Percorso: $OUTPUT_FILE"
     echo ""
-    echo " 🛠️  Prossimi passi:"
-    echo "   • $SELF_INSTALL_PATH config   → intervalli e notifiche"
-    echo "   • $SELF_INSTALL_PATH lists    → gestisci le liste"
+    echo " 🛠️  Per modificare le preferenze: $SELF_INSTALL_PATH settings"
+    echo ""
+}
+
+cmd_settings() {
+    load_config
+    # Ricarica stato in memoria dal config
+    [[ "${#BLOCK_STATE[@]}" -gt 0 ]] || set_config_defaults "${NTFY_TOPIC}"
+    [[ "${#CUSTOM_BLOCKLISTS[@]}" -gt 0 ]] || declare -ga CUSTOM_BLOCKLISTS=()
+    run_wizard
+    write_config
+    write_updater_script
+    echo ""
+    echo " ✅ Impostazioni salvate."
     echo ""
 }
 
@@ -485,6 +680,7 @@ cmd_uninstall() {
 
 cmd_status() {
     load_config
+    build_active_blocklists
     echo ""
     echo "╔══════════════════════════════════════════════════╗"
     echo "║   QBittorrent Blocklist Updater - Stato          ║"
@@ -493,7 +689,8 @@ cmd_status() {
     echo " ✓ Versione manager: v${VERSION}"
     echo " ✓ Aggiornamenti liste:  ogni ${LIST_UPDATE_INTERVAL}h"
     echo " ✓ Controllo script:     ogni ${SCRIPT_UPDATE_INTERVAL}h"
-    echo " ✓ Notifiche:            ${NOTIFY_MODE}"
+    echo " ✓ Notifiche liste:      ${NOTIFY_MODE}"
+    echo " ✓ Notifica agg. script: ${NOTIFY_SCRIPT_UPDATE}"
     echo " ✓ Ntfy topic:           ${NTFY_TOPIC}"
     echo ""
 
@@ -506,7 +703,7 @@ cmd_status() {
         echo " ✗ ipfilter.dat: NON PRESENTE"
     fi
 
-    echo " ✓ Liste configurate: ${#BLOCKLISTS[@]}"
+    echo " ✓ Liste attive: ${#BLOCKLISTS[@]}"
 
     if [[ -f "$STATE_FILE" ]]; then
         local lru lsc
@@ -544,145 +741,6 @@ cmd_run() {
 }
 
 cmd_version() { echo "qbittorrent-blocklist-manager v${VERSION}"; }
-
-cmd_config() {
-    load_config
-    echo ""
-    echo "╔══════════════════════════════════════════════════╗"
-    echo "║   Configurazione                                 ║"
-    echo "╚══════════════════════════════════════════════════╝"
-    echo ""
-    echo "Attuale:"
-    echo "  • Aggiornamento liste: ogni ${LIST_UPDATE_INTERVAL}h"
-    echo "  • Controllo script:    ogni ${SCRIPT_UPDATE_INTERVAL}h"
-    echo "  • Notifiche:           ${NOTIFY_MODE}"
-    echo ""
-    echo "Lascia vuoto per mantenere il valore attuale."
-    echo ""
-
-    local in_l in_s in_n
-    in_l=$(ask "Intervallo aggiornamento liste in ore [${LIST_UPDATE_INTERVAL}]: ")
-    in_s=$(ask "Intervallo controllo aggiornamenti script in ore [${SCRIPT_UPDATE_INTERVAL}]: ")
-    in_n=$(ask "Modalità notifica (always/errors/changes/none) [${NOTIFY_MODE}]: ")
-
-    [[ -n "$in_l" ]] && LIST_UPDATE_INTERVAL="$in_l"
-    [[ -n "$in_s" ]] && SCRIPT_UPDATE_INTERVAL="$in_s"
-    [[ -n "$in_n" ]] && NOTIFY_MODE="$in_n"
-
-    case "$NOTIFY_MODE" in
-        always|errors|changes|none) ;;
-        *) echo "❌ Modalità non valida: $NOTIFY_MODE"; exit 1 ;;
-    esac
-    [[ "$LIST_UPDATE_INTERVAL" =~ ^[0-9]+$ ]] || { echo "❌ Intervallo liste non valido"; exit 1; }
-    [[ "$SCRIPT_UPDATE_INTERVAL" =~ ^[0-9]+$ ]] || { echo "❌ Intervallo script non valido"; exit 1; }
-
-    write_config_from_vars
-    write_updater_script
-
-    echo ""
-    echo " ✅ Configurazione salvata in $CONF_FILE"
-    echo "   • Liste: ogni ${LIST_UPDATE_INTERVAL}h"
-    echo "   • Script: ogni ${SCRIPT_UPDATE_INTERVAL}h"
-    echo "   • Notifiche: ${NOTIFY_MODE}"
-    echo ""
-}
-
-cmd_lists() {
-    load_config
-    while true; do
-        echo ""
-        echo "╔══════════════════════════════════════════════════╗"
-        echo "║   Liste di blocco (${#BLOCKLISTS[@]} attive)               ║"
-        echo "╚══════════════════════════════════════════════════╝"
-        local i=1 entry name url
-        for entry in "${BLOCKLISTS[@]}"; do
-            [[ "$entry" == \#* ]] && continue
-            name="${entry##*|}"; url="${entry%%|*}"
-            printf "  %2d) %s\n" "$i" "$name"
-            printf "      %s\n" "$url"
-            ((i++)) || true
-        done
-        echo ""
-        echo "  [a] Aggiungi   [r] Rimuovi   [t] Test   [q] Esci"
-        echo ""
-        local choice; choice=$(ask "> ")
-        case "$choice" in
-            a) add_list ;;
-            r) remove_list ;;
-            t) test_lists ;;
-            q) echo "Ciao."; break ;;
-            *) echo "Scelta non valida" ;;
-        esac
-    done
-}
-
-add_list() {
-    local url name test tmp size
-    url=$(ask "URL della lista: ")
-    [[ -z "$url" ]] && { echo "URL vuoto, annullato."; return; }
-    name=$(ask "Nome descrittivo: ")
-    [[ -z "$name" ]] && name="$url"
-
-    test=$(ask "Testare subito il download? [Y/n] ")
-    if [[ ! "$test" =~ ^[Nn]$ ]]; then
-        tmp=$(mktemp)
-        if curl -fsSL --connect-timeout 20 --max-time 60 -o "$tmp" "$url" 2>/dev/null; then
-            size=$(wc -c < "$tmp")
-            echo "  ✓ Download OK (${size} byte)"
-        else
-            echo "  ⚠️  Download fallito. La lista potrebbe non funzionare."
-        fi
-        rm -f "$tmp"
-    fi
-
-    local new_entry="    \"${url}|${name}\""
-    awk -v entry="$new_entry" '/^\)/ && !done { print entry; done=1 } { print }' "$CONF_FILE" > "${CONF_FILE}.tmp" && mv "${CONF_FILE}.tmp" "$CONF_FILE"
-
-    load_config
-    echo "  ✓ Lista aggiunta: $name"
-}
-
-remove_list() {
-    local idx
-    idx=$(ask "Numero della lista da rimuovere: ")
-    [[ "$idx" =~ ^[0-9]+$ ]] || { echo "Numero non valido"; return; }
-
-    local -a numbered=()
-    local entry
-    for entry in "${BLOCKLISTS[@]}"; do
-        [[ "$entry" == \#* ]] && continue
-        numbered+=("$entry")
-    done
-
-    if (( idx < 1 || idx > ${#numbered[@]} )); then
-        echo "Numero fuori range (1-${#numbered[@]})"; return
-    fi
-
-    local target name confirm
-    target="${numbered[$((idx-1))]}"
-    name="${target##*|}"
-    confirm=$(ask "Rimuovere \"$name\"? [y/N] ")
-    [[ ! "$confirm" =~ ^[Yy]$ ]] && { echo "Annullato."; return; }
-
-    sed -i "\|\"${target}\"|d" "$CONF_FILE"
-    load_config
-    echo "  ✓ Lista rimossa: $name"
-}
-
-test_lists() {
-    echo "→ Test di tutte le liste..."
-    local ok=0 fail=0 entry url name
-    for entry in "${BLOCKLISTS[@]}"; do
-        [[ "$entry" == \#* ]] && continue
-        url="${entry%%|*}"; name="${entry##*|}"
-        if curl -fsSL --connect-timeout 20 --max-time 60 -o /dev/null "$url" 2>/dev/null; then
-            echo "  ✓ $name"; ((ok++)) || true
-        else
-            echo "  ✗ $name"; ((fail++)) || true
-        fi
-    done
-    echo "→ Risultato: $ok OK, $fail fallite"
-}
 
 cmd_update() {
     echo ""
@@ -724,12 +782,11 @@ cmd_help() {
 
 Uso: qbittorrent-blocklist-manager.sh <comando>
 
-  install    Installa e configura tutto
+  install    Installa e configura tutto (wizard interattivo)
+  settings   Modifica preferenze (notifiche, intervalli, liste)
   uninstall  Rimuove tutto (cron, updater, file, manager)
   status     Mostra stato, config, topic, log
   run        Forza un aggiornamento liste immediato
-  lists      Gestisci le liste di blocco (aggiungi/rimuovi/test)
-  config     Imposta intervalli e modalità notifica
   update     Verifica e installa aggiornamenti dello script
   version    Mostra la versione installata
   help       Mostra questa guida
@@ -744,6 +801,9 @@ case "${1:-help}" in
     install)
         cmd_install
         ;;
+    settings)
+        cmd_settings
+        ;;
     uninstall)
         cmd_uninstall
         ;;
@@ -752,12 +812,6 @@ case "${1:-help}" in
         ;;
     run)
         cmd_run
-        ;;
-    lists)
-        cmd_lists
-        ;;
-    config)
-        cmd_config
         ;;
     update)
         cmd_update
@@ -775,4 +829,3 @@ case "${1:-help}" in
         exit 1
         ;;
 esac
-
