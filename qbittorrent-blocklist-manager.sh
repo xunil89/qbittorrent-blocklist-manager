@@ -4,13 +4,13 @@
 # Gestione completa del filtro IP per qBittorrent
 # Uso: qbittorrent-blocklist-manager.sh <comando>
 #
-# Versione: 2.0.0
+# Versione: 2.0.1
 # ============================================================
 
 set -euo pipefail
 
 # --- VERSIONE ---
-VERSION="2.0.0"
+VERSION="2.0.1"
 REMOTE_URL="https://raw.githubusercontent.com/xunil89/qbittorrent-blocklist-manager/main/qbittorrent-blocklist-manager.sh"
 INSTALL_DIR="/usr/local/bin"
 SELF_INSTALL_PATH="${INSTALL_DIR}/qbittorrent-blocklist-manager.sh"
