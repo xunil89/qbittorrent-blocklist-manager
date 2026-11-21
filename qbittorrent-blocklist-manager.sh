@@ -2,7 +2,7 @@
 # ============================================================
 # qbittorrent-blocklist-manager.sh
 # Gestione completa del filtro IP per qBittorrent
-# Versione: 3.0.0
+# Versione: 3.0.1
 #
 # - TUI interattiva (install / settings)
 # - Checklist per attivare/disattivare/aggiungere/rimuovere liste
@@ -13,7 +13,7 @@
 
 set -euo pipefail
 
-VERSION="3.0.0"
+VERSION="3.0.1"
 REMOTE_URL="https://raw.githubusercontent.com/xunil89/qbittorrent-blocklist-manager/refs/heads/main/qbittorrent-blocklist-manager.sh"
 INSTALL_DIR="/usr/local/bin"
 
@@ -79,8 +79,6 @@ ask() {
     fi
     echo "$answer"
 }
-
-hr() { echo "──────────────────────────────────────────────"; }
 
 generate_topic() {
     local adjectives=(crimson silent frozen dark swift iron ghost neon vivid amber cobalt ember frost lunar onyx pixel quartz raven solar void)
@@ -205,11 +203,11 @@ wizard_notify_mode() {
     echo "│                        fallite, aggiorn.   │"
     echo "│  3) solo errori      → solo liste fallite  │"
     echo "└────────────────────────────────────────────┘"
-    local sel; sel=$(ask "Scelta [$([[ ${NOTIFY_MODE} == all ]] && echo 1 || [[ ${NOTIFY_MODE} == changes ]] && echo 2 || echo 3)]: ")
+    local sel; sel=$(ask "Scelta [2]: ")
     case "$sel" in
         1) NOTIFY_MODE="all" ;;
         3) NOTIFY_MODE="errors" ;;
-        "") ;;
+        "") ;; # mantiene default "changes"
         *) NOTIFY_MODE="changes" ;;
     esac
     echo "  → Modalità notifiche: $NOTIFY_MODE"
@@ -394,7 +392,7 @@ run_settings_menu() {
 #   UPDATER SCRIPTS (generati con placeholder sostituiti)
 # ============================================================
 write_updater_scripts() {
-    local tmp dir
+    local dir
     dir=$(mktemp -d)
 
     # ---------- 1) LIST UPDATER ----------
@@ -443,8 +441,8 @@ fi
 
 now=$(date +%s)
 last=$(grep '^LAST_LIST_UPDATE=' "$STATE_FILE" | cut -d= -f2 || echo 0)
-remaining=$(( (last + LIST_UPDATE_INTERVAL*3600 - now) / 60 ))
 if (( now - last < LIST_UPDATE_INTERVAL * 3600 )); then
+    remaining=$(( (last + LIST_UPDATE_INTERVAL*3600 - now) / 60 ))
     log "List update: non ancora ora (prossimo tra ${remaining} min)"
     exit 0
 fi
@@ -470,7 +468,7 @@ def lines_from(path):
     if head == b'\x1f\x8b':
         with gzip.open(path, 'rt', errors='ignore') as f:
             yield from f
-    elif head == b'PK\x03\x04'[0:2] or head == b'PK':
+    elif head[:2] == b'PK':
         with zipfile.ZipFile(path) as z:
             for n in z.namelist():
                 with z.open(n) as member:
@@ -480,7 +478,7 @@ def lines_from(path):
             yield from f
 
 IP = r'\d{1,3}(?:\.\d{1,3}){3}'
-re_range  = re.compile(rf'^({IP})\s*[-–]\s*({IP})$')
+re_range  = re.compile(rf'^({IP})\s*[-\u2013]\s*({IP})$')
 re_pair   = re.compile(rf'^({IP})\s*,\s*({IP})')
 re_cidr   = re.compile(rf'^({IP})(?:/(\d{{1,2}}))?')
 
@@ -571,6 +569,7 @@ LIST_UPDATER
 # Controlla se esiste una nuova versione dello script manager (check orario, intervallo interno)
 set -euo pipefail
 
+MANAGER_NAME="__MANAGER_NAME__"
 CONFIG_DIR="__CONFIG_DIR__"
 CONF_FILE="${CONFIG_DIR}/blocklist.conf"
 STATE_FILE="${CONFIG_DIR}/.blocklist-script-state"
@@ -640,7 +639,6 @@ if [[ "$remote_version" == "$SCRIPT_LOCAL_VERSION" ]]; then
 fi
 
 cmp="same"
-local_ok=1
 IFS='.' read -ra a1 <<< "$remote_version"
 IFS='.' read -ra a2 <<< "$SCRIPT_LOCAL_VERSION"
 for i in 0 1 2; do
@@ -664,6 +662,7 @@ CHECK_UPDATER
     sed -i "s|__CONFIG_DIR__|${CONFIG_DIR}|g" "${dir}/${LIST_APP}.sh" "${dir}/${CHECK_APP}.sh"
     sed -i "s|__VERSION__|${VERSION}|g" "${dir}/${CHECK_APP}.sh"
     sed -i "s|__REMOTE_URL__|${REMOTE_URL}|g" "${dir}/${CHECK_APP}.sh"
+    sed -i "s|__MANAGER_NAME__|${MANAGER_NAME}|g" "${dir}/${CHECK_APP}.sh"
 
     sudo mkdir -p "$INSTALL_DIR"
     sudo cp "${dir}/${LIST_APP}.sh" "$LIST_SCRIPT"
@@ -673,9 +672,14 @@ CHECK_UPDATER
 }
 
 # --- BOOTSTRAP (installazione via pipe) ---
+# Scatta quando lo script è eseguito da pipe (es. curl | bash): $0 è "bash"
+# e stdin non è un terminale. Anche senza argomento "install" procede.
 bootstrap_if_piped() {
     local cmd="${1:-help}"
-    if [[ "$cmd" == "install" ]] && { [[ ! -f "$0" ]] || [[ "$0" == "bash" || "$0" == "-bash" ]]; }; then
+    local is_piped=0
+    [[ ! -t 0 ]] && is_piped=1
+    if { [[ "$cmd" == "install" ]] || { [[ "$cmd" == "help" ]] && (( is_piped )); }; } \
+       && { [[ ! -f "$0" ]] || [[ "$0" == "bash" || "$0" == "-bash" || "$0" == "/usr/bin/bash" || "$0" == "/bin/bash" ]]; }; then
         echo "→ Installazione da remoto..."
         local tmpfile
         tmpfile=$(mktemp)
@@ -849,7 +853,7 @@ cmd_status() {
     echo " ✓ Notifiche:           ${NOTIFY_MODE} (priorità ${NTFY_PRIORITY})"
     echo " ✓ Notifica agg. script: ${NOTIFY_SCRIPT_UPDATE}"
     echo " ✓ Ntfy topic:          ${NTFY_TOPIC}"
-    echo " ✓ Liste attive:        ${#BLOCKLISTS[@]} (${BLOCK_STATE:+$(printf '%s' "${!BLOCK_STATE[@]}" | wc -l)} predefinite + ${#CUSTOM_BLOCKLISTS[@]} custom)"
+    echo " ✓ Liste attive:        ${#BLOCKLISTS[@]} (${#CUSTOM_BLOCKLISTS[@]} custom)"
     echo ""
 
     if [[ -f "$OUTPUT_FILE" ]]; then
