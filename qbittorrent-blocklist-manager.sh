@@ -2,19 +2,13 @@
 # ============================================================
 # qbittorrent-blocklist-manager.sh
 # Gestione completa del filtro IP per qBittorrent
-# Versione: 3.0.4
-#
-# FIX 3.0.4: eliminati i pattern "condizione && azione" come ultimi
-# comandi di funzioni/loop che, con set -e, causavano un'uscita
-# silenziosa in write_config (il motivo per cui l'installazione
-# moriva dopo il wizard senza creare config, updater e cron).
-# FIX: conteggio righe con grep -c che restituiva doppio "0".
+# Versione: 3.0.5
 # ============================================================
 
 set -euo pipefail
 trap 'echo "" >&2; echo "❌ ERRORE alla riga $LINENO: operazione interrotta." >&2; exit 1' ERR
 
-VERSION="3.0.4"
+VERSION="3.0.5"
 REMOTE_URL="https://raw.githubusercontent.com/xunil89/qbittorrent-blocklist-manager/refs/heads/main/qbittorrent-blocklist-manager.sh"
 INSTALL_DIR="/usr/local/bin"
 
@@ -230,8 +224,8 @@ load_config() {
         echo "   Esegui prima: ${MANAGER_NAME} install"
         exit 1
     fi
-    # shellcheck disable=SC1090
-    source "$CONF_FILE"
+   # shellcheck disable=SC1090
+   source <(sed 's/^declare -A BLOCK_STATE=/declare -gA BLOCK_STATE=/' "$CONF_FILE")
     if [[ "${#BLOCK_STATE[@]}" -eq 0 ]]; then
         set_config_defaults "${NTFY_TOPIC:-}"
     fi
@@ -270,7 +264,7 @@ write_config() {
         echo "NOTIFY_SCRIPT_UPDATE=\"${NOTIFY_SCRIPT_UPDATE}\""
         echo "LIST_UPDATE_INTERVAL=${LIST_UPDATE_INTERVAL}"
         echo "SCRIPT_UPDATE_INTERVAL=${SCRIPT_UPDATE_INTERVAL}"
-        echo "declare -A BLOCK_STATE=("
+        echo "declare -gA BLOCK_STATE=("
         local entry url
         for entry in "${DEFAULT_BLOCKLISTS[@]}"; do
             url="${entry%%|*}"
