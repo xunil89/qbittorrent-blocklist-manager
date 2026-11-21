@@ -1,236 +1,128 @@
-## 🚀 Installazione
+# qBittorrent Blocklist Manager
 
-### One-liner (consigliato)
+Gestione completa e automatizzata del **filtro IP (banlist) per qBittorrent**: scarica liste di indirizzi IP "ostili" da fonti di threat intelligence, le converte in `ipfilter.dat` e tiene tutto aggiornato con due cron separati, con notifiche push via **ntfy**.
+
+![shell](https://img.shields.io/badge/language-bash-black) ![license](https://img.shields.io/badge/license-MIT-green) ![platform](https://img.shields.io/badge/platform-GNU%2FLinux-blue)
+
+## Caratteristiche
+
+- 🧙 **TUI interattiva** per installazione e impostazioni: niente editing manuale di file di configurazione
+- ☑️ **Checklist interattiva** per attivare/disattivare le 19 liste predefinite
+- ➕ **Gestione liste personalizzate**: aggiungi e rimuovi i tuoi URL direttamente dal menu
+- 🔄 **Due updater separati** su **due cron distinti**:
+  - aggiornamento **liste IP** (default: ogni **24h**)
+  - controllo **nuove versioni dello script** (default: ogni **48h**)
+- 🔔 **Notifiche ntfy configurabili**: scegli *cosa* notificare (tutto / solo cambi di stato / solo errori) e la **priorità** (1–5, default 3)
+- ✅ **Conversione corretta** CIDR, range e IP singoli nel formato PeerGuardian (`inizio,fine`)
+- 🔒 Lock con `flock` anti-concorrenza, hash delle regole per rilevare i cambiamenti, log dedicato
+- 🧹 **Disinstallazione pulita** di tutto ciò che viene installato
+- 🚀 Auto-update dello script manager dal repository remoto
+
+## Come funziona
+
+```
+cron orario ──► qbittorrent-blocklist-list-update.sh   (rispetta LIST_UPDATE_INTERVAL, default 24h)
+cron orario ──► qbittorrent-blocklist-script-check.sh  (rispetta SCRIPT_UPDATE_INTERVAL, default 48h)
+                        │
+                        ├─ Scarica le liste attive
+                        ├─ Converte tutto in ipfilter.dat (formatoinizio,fine - nome)
+                        ├─ Confronta l'hash → rileva cambiamenti
+                        └─ Notifica via ntfy secondo modalità e priorità scelte
+```
+
+Gli updater vengono lanciati ogni ora da cron, ma decidono internamente se l'intervallo configurato è trascorso: così funziona con qualsiasi numero di ore, non solo con multipli di 24.
+
+## Liste predefinite
+
+Naunter BT Blocklists · BiglyBT Level1 · Transmission Blocklist · BlocklistProject Torrent · FireHOL Level1/Level2 · Spamhaus DROP/EDROP · DShield SANS · Abuse.ch Feodo / Feodo Recommended / SSLBL / URLhaus · Emerging Threats · Team Cymru Bogons · IPDeny (CN, RU, IR, KP)
+
+Tutte attivabili/disattivabili dalla checklist; puoi aggiungerne altre in `settings → Liste personalizzate`.
+
+## Installazione
 
 ```bash
-curl -fsSL -o qbittorrent-blocklist-manager.sh \
-  https://raw.githubusercontent.com/xunil89/qbittorrent-blocklist-manager/refs/heads/main/qbittorrent-blocklist-manager.sh
-bash -n qbittorrent-blocklist-manager.sh && echo "OK sintassi"
+curl -fsSL https://raw.githubusercontent.com/xunil89/qbittorrent-blocklist-manager/refs/heads/main/qbittorrent-blocklist-manager.sh | bash
+```
+
+Lo script si installa in `/usr/local/bin/qbittorrent-blocklist-manager` e lancia il wizard. Puoi anche scaricarlo ed eseguirlo direttamente:
+
+```bash
 chmod +x qbittorrent-blocklist-manager.sh
-sudo ./qbittorrent-blocklist-manager.sh install
+./qbittorrent-blocklist-manager.sh install
 ```
 
-Lo script si auto-installa in `/usr/local/bin/qbittorrent-blocklist-manager.sh` e poi configura tutto. Le conferme interattive funzionano anche da pipe.
+### Dipendenze
 
-### Installazione manuale
+`curl`, `python3`, `crontab`, `flock`, `sha256sum` (verificate automaticamente all'installazione).
+
+## Utilizzo
 
 ```bash
-git clone https://github.com/xunil89/qbittorrent-blocklist-manager.git
-cd qbittorrent-blocklist-manager
-chmod +x qbittorrent-blocklist-manager.sh
-sudo ./qbittorrent-blocklist-manager.sh install
+qbittorrent-blocklist-manager install    # installazione guidata (wizard TUI)
+qbittorrent-blocklist-manager settings   # menu impostazioni (TUI)
+qbittorrent-blocklist-manager status     # stato, topic ntfy, ultimo log
+qbittorrent-blocklist-manager run        # forza l'aggiornamento liste adesso
+qbittorrent-blocklist-manager update     # aggiorna lo script all'ultima versione
+qbittorrent-blocklist-manager uninstall  # rimozione completa
 ```
 
----
+### Il wizard in breve
 
-## 📋 Comandi
+All'installazione (e in `settings`) configuri:
 
-```bash
-qbittorrent-blocklist-manager.sh <comando>
-```
+1. **Notifiche** — cosa notificare:
+   - `tutto`: ogni aggiornamento
+   - `cambi di stato` (default): liste modificate, fallite, nuove versioni dello script
+   - `solo errori`: solamente liste fallite
+2. **Priorità ntfy** (1–5, default `3`)
+3. **Intervallo aggiornamento liste** (default `24h`)
+4. **Intervallo controllo aggiornamenti script** (default `48h`)
+5. **Checklist liste predefinite** — digita i numeri per attivarle/disattivarle, `a` tutte, `n` nessuna, `k` conferma
+6. **Liste personalizzate** — aggiungi (con test opzionale del download) o rimuovi i tuoi URL
 
-| Comando | Descrizione |
-|---------|-------------|
-| `install` | Installa e configura tutto |
-| `settings` | Modifica preferenze (notifiche, intervalli, liste) |
-| `uninstall` | Rimuove tutto (cron, updater, file, manager) |
-| `status` | Mostra stato, topic, log |
-| `run` | Aggiornamento manuale immediato |
-| `update` | Verifica e installa aggiornamenti dello script |
-| `version` | Mostra la versione installata |
-| `help` | Mostra la guida |
+### Notifiche
 
----
+Al termine dell'installazione ricevi il **topic ntfy** (es. `silent-otter-4821`). Iscriviti:
 
-## 🔄 Aggiornamento dello script
+- Browser: `https://ntfy.sh/<topic>`
+- App: aggiungi il server `ntfy.sh` e il topic nel client [ntfy](https://ntfy.sh)
 
-```bash
-qbittorrent-blocklist-manager.sh update
-```
+### Configurare qBittorrent
 
-Il comando `update`:
-1. Scarica l'header dello script remoto
-2. Estrae il numero di versione (`VERSION=`)
-3. Confronta con la versione locale (semver)
-4. Se disponibile, scarica e sostituisce lo script
-5. Mantiene il topic ntfy e le configurazioni esistenti
-
----
-
-## 🗑️ Disinstallazione
-
-### Metodo consigliato (interattivo)
-
-```bash
-qbittorrent-blocklist-manager.sh uninstall
-```
-
-Chiede conferma per ogni componente (ipfilter.dat, log, manager stesso).
-
-### One-liner (non interattivo)
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/xunil89/qbittorrent-blocklist-manager/main/uninstall.sh | bash
-```
-
-Rimuove tutto in un colpo solo senza conferme.
-
----
-
-## 📱 Configurazione qBittorrent
+Strumenti → Opzioni → BitTorrent → **Filtro IP** → imposta il percorso:
 
 ```
-Strumenti → Opzioni → BitTorrent → Filtro IP
+~/.config/qBittorrent/ipfilter.dat
 ```
 
-| Campo | Valore |
-|-------|--------|
-| Percorso | `~/.config/qBittorrent/ipfilter.dat` |
-| Abilita filtro IP | ✅ Spuntato |
+Riavvia qBittorrent (o ricarica il filtro) dopo il primo aggiornamento.
 
----
-
-## 📡 Notifiche NTFY
-
-Ad ogni aggiornamento riceverai una notifica con:
-- Liste scaricate con successo / totali
-- Numero di regole generate
-- Eventuali liste fallite
-
-**Per ricevere le notifiche:**
-- **App**: cerca il topic generato nell'app ntfy
-- **Browser**: `https://ntfy.sh/<topic>`
-- **CLI**: `ntfy subscribe <topic>`
-
----
-
-## 📚 Liste Incluse
-
-### Anti-Torrent Specific
-
-| Fonte | Descrizione |
-|-------|-------------|
-| Naunter BT Blocklists | Community-curata, specifica P2P |
-| BiglyBT Level1 | Fork di Vuze, ben mantenuta |
-| Transmission Blocklist | GitHub attivo, formato eMule |
-| BlocklistProject Torrent | Tracker e fonti torrent malevole |
-
-### Threat Intelligence
-
-| Fonte | Descrizione |
-|-------|-------------|
-| FireHOL Level 1-2 | Aggregatore, aggiornamenti frequenti |
-| Spamhaus DROP/EDROP | Standard di settore, reti abusive |
-| DShield (SANS) | Top attacker IP |
-| Abuse.ch Feodo | Trojan bancari |
-| Abuse.ch SSLBL | Certificati SSL malevoli |
-| Abuse.ch URLhaus | Malware distribution |
-| Emerging Threats | IP compromessi |
-
-### Bogons
-
-| Fonte | Descrizione |
-|-------|-------------|
-| Team Cymru | IP non assegnati / riservati |
-
-### Geographic (opzionale, commentato)
-
-| Fonte | Descrizione |
-|-------|-------------|
-| IPDeny CN | Cina |
-| IPDeny RU | Russia |
-| IPDeny IR | Iran |
-| IPDeny KP | Corea del Nord |
-
-> ⚠️ **Attenzione:** i blocchi geografici sono molto aggressivi. Se usi tracker con peer in quei paesi, perderai molti seed.
-
----
-
-## ✏️ Personalizzare le Liste
-
-```bash
-sudo nano /usr/local/bin/qbittorrent-blocklist-updater.sh
-```
-
-Trova l'array `BLOCKLISTS()` all'inizio dello script:
-
-```bash
-BLOCKLISTS=(
-    # === Anti-Torrent specific ===
-    "https://raw.githubusercontent.com/Naunter/BT_BlockLists/master/bt_blocklists.gz|Naunter BT Blocklists"
-    "https://www.biglybt.com/blocklist/level1.gz|BiglyBT Level1"
-
-    # === Aggiungi la tua lista qui ===
-    "https://example.com/my-list.txt|La Mia Lista"
-
-    # === Geographic (commentati) ===
-    # "http://www.ipdeny.com/ipblocks/data/countries/cn.zone|IPDeny China"
-)
-```
-
-**Formato**: `"URL|Nome descrittivo"`
-
----
-
-## 📁 File Creati
+## File installati
 
 | Percorso | Descrizione |
-|----------|-------------|
-| `/usr/local/bin/qbittorrent-blocklist-manager.sh` | Script manager |
-| `/usr/local/bin/qbittorrent-blocklist-updater.sh` | Script updater |
-| `~/.config/qBittorrent/ipfilter.dat` | Liste IP bloccate |
-| `~/.config/qBittorrent/.blocklist-meta` | Metadati installazione |
-| `/var/log/qbittorrent-blocklist.log` | Log operativo |
+|---|---|
+| `/usr/local/bin/qbittorrent-blocklist-manager.sh` | Manager (wizard, settings, update, uninstall) |
+| `/usr/local/bin/qbittorrent-blocklist-list-update.sh` | Updater liste IP |
+| `/usr/local/bin/qbittorrent-blocklist-script-check.sh` | Controllo nuove versioni |
+| `~/.config/qBittorrent/blocklist.conf` | Configurazione |
+| `~/.config/qBittorrent/ipfilter.dat` | Filtro generato per qBittorrent |
+| `~/.config/qBittorrent/.blocklist-state` | Stato aggiornamenti liste |
+| `~/.config/qBittorrent/.blocklist-script-state` | Stato controllo versione |
+| `~/.config/qBittorrent/blocklist.log` | Log |
+| crontab utente | 2 voci (tick orario con tag) |
 
----
+## Note tecniche
 
-## 🔧 Troubleshooting
+- La conversione è delegata a **un unico processo Python** per lista (gzip/zip testuali riconosciuti automaticamente), quindi è veloce anche su liste enormi.
+- Formati supportati in input: CIDR (`1.2.3.0/24`), range (`1.2.3.0-1.2.3.255`, anche con spazi), coppie DAT (`1.2.3.0,1.2.3.255`), IP singoli; commenti `#`, `;` e `//` rimossi.
+- CIDR → `network,broadcast` (non netmask!), IP singolo → `ip,ip`: il file generato blocca **esattamente** ciò che deve bloccare.
+- La home è risolta correttamente anche quando il manager viene avviato con `sudo` (usa `SUDO_USER`).
+- Il topic ntfy è casuale; su server pubblici chi conosce il topic può leggere le notifiche: per privacy puoi impostare un `NTFY_URL` privato (self-hosted) in `blocklist.conf`.
 
-| Problema | Soluzione |
-|----------|-----------|
-| `flock: command not found` | `sudo apt install util-linux` |
-| `python3: command not found` | `sudo apt install python3` |
-| Liste che falliscono sempre | Controlla il log: `cat /var/log/qbittorrent-blocklist.log` |
-| qBittorrent non carica il file | Verifica il percorso nelle impostazioni |
-| Troppe regole (lento) | Rimuovi FireHOL Level2 o le liste geografiche |
-| `update` non raggiunge il remoto | Verifica la connessione e l'URL nel repo |
+## Disclaimer
 
----
+Bloccare interi paesi o liste aggressive (es. FireHOL Level2, IPDeny) riduce drasticamente il pool di peer disponibili. Scegli le liste con criterio dalla checklist.
 
-## 📊 Formato Output (`ipfilter.dat`)
+## Licenza
 
-```
-# ============================================================
-# qBittorrent IP Filter - Auto-generated
-# Updated: 2025-01-15 04:00:12
-# Sources: Multiple threat intelligence feeds
-# ============================================================
-1.0.0.0,255.255.255.255 - Spamhaus DROP
-1.0.4.0,255.255.255.0 - FireHOL Level1
-2.56.219.0,255.255.255.0 - Naunter BT Blocklists
-...
-```
-
----
-
-## 🏷️ Versionamento
-
-Lo script usa [Semantic Versioning](https://semver.org/):
-- `MAJOR.MINOR.PATCH` (es. `1.0.2`)
-- Il numero è definito nella variabile `VERSION=` all'inizio dello script
-- Il comando `update` confronta la versione locale con quella remota
-
----
-
-## ⚖️ Note Legali
-
-- Questo script blocca **peer in entrata** su qBittorrent. Non impedisce al tuo IP di essere bloccato da altri.
-- Le liste geografiche sono **opzionali** e commentate di default.
-- L'uso di qBittorrent per scaricare materiale protetto da copyright è responsabilità dell'utente.
-
----
-
-## 📄 Licenza
-
-MIT — usa, modifica, distribuisci liberamente.
-```
+MIT
