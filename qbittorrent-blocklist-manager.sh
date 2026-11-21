@@ -2,7 +2,7 @@
 # ============================================================
 # qbittorrent-blocklist-manager.sh
 # Gestione completa del filtro IP per qBittorrent
-# Versione: 3.0.2
+# Versione: 3.0.3
 #
 # - Installazione dal file in esecuzione (niente ri-download alla cieca)
 # - Errori SEMPRE visibili: trap ERR + verifica finale dell'installazione
@@ -14,9 +14,9 @@
 # ============================================================
 
 set -euo pipefail
-trap 'echo "" >&2; echo "❌ ERRORE alla riga $LINENO: installazione interrotta." >&2; exit 1' ERR
+trap 'echo "" >&2; echo "❌ ERRORE alla riga $LINENO: operazione interrotta." >&2; exit 1' ERR
 
-VERSION="3.0.2"
+VERSION="3.0.3"
 REMOTE_URL="https://raw.githubusercontent.com/xunil89/qbittorrent-blocklist-manager/refs/heads/main/qbittorrent-blocklist-manager.sh"
 INSTALL_DIR="/usr/local/bin"
 
@@ -127,64 +127,81 @@ sudox() {
     fi
 }
 
+# Il file corrente ($0) è il manager già installato?
+running_installed_manager() {
+    [[ -f "$0" && -r "$0" ]] || return 1
+    local resolved
+    resolved="$(readlink -f "$0")" || return 1
+    [[ "$resolved" == "$(readlink -f "$MANAGER_PATH")" ]]
+}
+
 # ============================================================
-#   SORGENTE DA INSTALLARE: SEMPRE IL FILE CHE STAI ESEGUENDO
+#   SORGENTE DA INSTALLARE
 # ============================================================
 SRC_FILE=""
 
 resolve_source() {
+    # Caso 1: stiamo GIÀ eseguendo il manager installato -> sorgente = se stesso, nessuna copia necessaria
+    if running_installed_manager; then
+        SRC_FILE="$MANAGER_PATH"
+        echo "→ Stai eseguendo il manager installato: nessuna copia necessaria."
+        return
+    fi
+
+    # Caso 2: file locale (scaricato manualmente o già presente sul disco)
     if [[ -f "$0" && -r "$0" && ! "$0" =~ ^(bash|-bash|/bin/bash|/usr/bin/bash)$ ]]; then
         SRC_FILE="$(readlink -f "$0")"
         echo "→ Sorgente: ${SRC_FILE} (v$(grep -m1 '^VERSION=' "$SRC_FILE" | cut -d= -f2 | tr -d '"'))"
-    else
-        # Caso pipe (curl | bash): il file non esiste su disco -> scarico dal remoto,
-        # MA verifico che sia una versione sensata prima di installare.
-        echo "→ Esecuzione da pipe: scarico la versione remota..."
-        local tmpfile remote_version
-        tmpfile=$(mktemp)
-        if ! curl -fsSL --connect-timeout 15 --max-time 60 -o "$tmpfile" "$REMOTE_URL"; then
-            rm -f "$tmpfile"
-            echo "❌ Download fallito: $REMOTE_URL"
-            echo "   Alternativa: scarica lo script con curl -o e lancialo con './script.sh install'."
-            exit 1
-        fi
-        if ! head -1 "$tmpfile" | grep -q "bash"; then
-            rm -f "$tmpfile"
-            echo "❌ Il file remoto non è uno script bash valido."
-            exit 1
-        fi
-        remote_version=$(grep -m1 '^VERSION=' "$tmpfile" | cut -d= -f2 | tr -d '"' || echo "")
-        if [[ -z "$remote_version" ]]; then
-            rm -f "$tmpfile"
-            echo "❌ Il file remoto non contiene un numero di versione valido."
-            echo "   Probabilmente il repository non è aggiornato: scarica lo script manualmente."
-            exit 1
-        fi
-        echo "   Versione remota: v${remote_version} (eseguita: v${VERSION})"
-        if version_compare "$remote_version" "$VERSION"; then
-            [[ "$CMP_RESULT" == "older" ]] && {
-                rm -f "$tmpfile"
-                echo "❌ ATTENZIONE: il repository contiene una versione PIÙ VECCHIA (v${remote_version}) di quella eseguita (v${VERSION})."
-                echo "   Installazione annullata per non sovrascrivere con codice obsoleto."
-                echo "   Aggiorna il repository o lancia lo script da un file locale."
-                exit 1
-            }
-        fi
-        SRC_FILE="$tmpfile"
-        KEEP_SRC=false
+        return
     fi
-    KEEP_SRC=true
+
+    # Caso 3: pipe (curl | bash) -> il file non esiste su disco, scarico dal remoto
+    # MA verifico che la versione remota sia sensata prima di installare.
+    echo "→ Esecuzione da pipe: scarico la versione remota..."
+    local tmpfile remote_version
+    tmpfile=$(mktemp)
+    if ! curl -fsSL --connect-timeout 15 --max-time 60 -o "$tmpfile" "$REMOTE_URL"; then
+        rm -f "$tmpfile"
+        echo "❌ Download fallito: $REMOTE_URL"
+        echo "   Alternativa: scarica lo script con 'curl -o' e lancialo con 'bash script.sh install'."
+        exit 1
+    fi
+    if ! head -1 "$tmpfile" | grep -q "bash"; then
+        rm -f "$tmpfile"
+        echo "❌ Il file remoto non è uno script bash valido."
+        exit 1
+    fi
+    remote_version=$(grep -m1 '^VERSION=' "$tmpfile" | cut -d= -f2 | tr -d '"' || echo "")
+    if [[ -z "$remote_version" ]]; then
+        rm -f "$tmpfile"
+        echo "❌ Il file remoto non contiene un numero di versione valido."
+        echo "   Probabilmente il repository non è aggiornato: scarica lo script manualmente."
+        exit 1
+    fi
+    echo "   Versione remota: v${remote_version} (eseguita: v${VERSION})"
+    if version_compare "$remote_version" "$VERSION" && [[ "$CMP_RESULT" == "older" ]]; then
+        rm -f "$tmpfile"
+        echo "❌ ATTENZIONE: il repository contiene una versione PIÙ VECCHIA (v${remote_version}) di quella eseguita (v${VERSION})."
+        echo "   Installazione annullata per non sovrascrivere con codice obsoleto."
+        echo "   Aggiorna il repository o scarica lo script e lancialo da file locale."
+        exit 1
+    fi
+    SRC_FILE="$tmpfile"
 }
 
 install_manager() {
+    # Se sorgente e destinazione coincidono, non c'è nulla da copiare
+    if [[ -n "$SRC_FILE" && "$(readlink -f "$SRC_FILE")" == "$(readlink -f "$MANAGER_PATH")" ]]; then
+        echo "  ✓ Manager già presente in $MANAGER_PATH (versione corrente)"
+        return
+    fi
+
     echo "→ Copia del manager in ${MANAGER_PATH}..."
     sudox mkdir -p "$INSTALL_DIR"
     sudox cp "$SRC_FILE" "$MANAGER_PATH"
     sudox chmod 755 "$MANAGER_PATH"
     [[ -f "$MANAGER_PATH" ]] || { echo "❌ Il manager NON è stato copiato: $MANAGER_PATH"; exit 1; }
     echo "  ✓ Manager installato: $MANAGER_PATH"
-    [[ "${KEEP_SRC:-true}" == false && -n "${SRC_FILE}" ]] && rm -f "$SRC_FILE"
-    true
 }
 
 # ============================================================
@@ -783,7 +800,7 @@ add_cron_line() {
 #   VERIFICA FINALE INSTALLAZIONE
 # ============================================================
 verify_install() {
-    local problems=0 line
+    local problems=0 line label path
 
     for line in \
         "manager|$MANAGER_PATH" \
@@ -792,7 +809,7 @@ verify_install() {
         "config|$CONF_FILE" \
         "stato liste|$STATE_FILE" \
         "log|$LOG_FILE"; do
-        local label="${line%%|*}" path="${line##*|}"
+        label="${line%%|*}"; path="${line##*|}"
         if [[ -f "$path" ]]; then
             echo "  ✓ ${label}: ${path}"
         else
@@ -835,9 +852,9 @@ cmd_install() {
     echo "→ Installazione manager..."
     install_manager
 
-    # Da qui in avanti rilanciamo SEMPRE l'installazione dal file installato,
-    # così l'utente lavora con il manager ufficiale, non con l'istanza temporanea.
-    if [[ "$0" != "$MANAGER_PATH" ]]; then
+    # Se NON stiamo già eseguendo il manager installato, rilanciamo da lì,
+    # così l'utente lavora sempre con il manager ufficiale.
+    if ! running_installed_manager; then
         echo ""
         echo "→ Relaunch dal manager installato..."
         exec "$MANAGER_PATH" install
@@ -1080,8 +1097,10 @@ EOF
 # --- ENTRY POINT ---
 case "${1:-help}" in
     install)
-        # Se siamo in pipe (stdin non tty e $0 è bash): risolvi sorgente, installa manager, exec
-        if { [[ ! -f "$0" ]] || [[ "$0" == "bash" || "$0" == "-bash" || "$0" == "/bin/bash" || "$0" == "/usr/bin/bash" ]]; }; then
+        # Solo se arriviamo da pipe ($0 è bash): risolvi sorgente remota e exec dal manager.
+        # Se invece $0 è un file reale, cmd_install gestisce tutto, incluso il caso
+        # in cui il file È il manager installato (nessuna copia, nessun exec loop).
+        if [[ ! -f "$0" ]] || [[ "$0" == "bash" || "$0" == "-bash" || "$0" == "/bin/bash" || "$0" == "/usr/bin/bash" ]]; then
             check_deps
             resolve_source
             install_manager
