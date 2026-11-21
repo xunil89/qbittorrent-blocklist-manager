@@ -2,21 +2,19 @@
 # ============================================================
 # qbittorrent-blocklist-manager.sh
 # Gestione completa del filtro IP per qBittorrent
-# Versione: 3.0.3
+# Versione: 3.0.4
 #
-# - Installazione dal file in esecuzione (niente ri-download alla cieca)
-# - Errori SEMPRE visibili: trap ERR + verifica finale dell'installazione
-# - TUI interattiva (install / settings)
-# - Checklist per attivare/disattivare/aggiungere/rimuovere liste
-# - Due updater separati (liste + check script) su due cron distinti
-# - Conversione corretta CIDR/range/IP -> ipfilter.dat (Python)
-# - Notifiche ntfy configurabili (modalità + priorità)
+# FIX 3.0.4: eliminati i pattern "condizione && azione" come ultimi
+# comandi di funzioni/loop che, con set -e, causavano un'uscita
+# silenziosa in write_config (il motivo per cui l'installazione
+# moriva dopo il wizard senza creare config, updater e cron).
+# FIX: conteggio righe con grep -c che restituiva doppio "0".
 # ============================================================
 
 set -euo pipefail
 trap 'echo "" >&2; echo "❌ ERRORE alla riga $LINENO: operazione interrotta." >&2; exit 1' ERR
 
-VERSION="3.0.3"
+VERSION="3.0.4"
 REMOTE_URL="https://raw.githubusercontent.com/xunil89/qbittorrent-blocklist-manager/refs/heads/main/qbittorrent-blocklist-manager.sh"
 INSTALL_DIR="/usr/local/bin"
 
@@ -29,9 +27,8 @@ CHECK_SCRIPT="${INSTALL_DIR}/${CHECK_APP}.sh"
 
 CRON_TAG_LIST="# ${LIST_APP}"
 CRON_TAG_CHECK="# ${CHECK_APP}"
-CRON_SCHEDULE="0 * * * *"   # tick orario: gli intervalli reali sono gestiti dagli updater
+CRON_SCHEDULE="0 * * * *"
 
-# --- Home reale anche quando lanciato con sudo ---
 if [[ -n "${SUDO_USER:-}" ]]; then
     REAL_USER="${SUDO_USER}"
     REAL_HOME="$(getent passwd "${SUDO_USER}" | cut -d: -f6)"
@@ -49,7 +46,6 @@ STATE_FILE="${CONFIG_DIR}/.blocklist-state"
 SCRIPT_STATE_FILE="${CONFIG_DIR}/.blocklist-script-state"
 LOG_FILE="${CONFIG_DIR}/blocklist.log"
 
-# --- LISTE PREDEFINITE (formato "URL|Nome") ---
 DEFAULT_BLOCKLISTS=(
     "https://raw.githubusercontent.com/Naunter/BT_BlockLists/master/bt_blocklists.gz|Naunter BT Blocklists"
     "https://www.biglybt.com/blocklist/level1.gz|BiglyBT Level1"
@@ -72,7 +68,6 @@ DEFAULT_BLOCKLISTS=(
     "http://www.ipdeny.com/ipblocks/data/countries/kp.zone|IPDeny North Korea"
 )
 
-# --- UTILITÀ ---
 ask() {
     local prompt="$1" answer
     if [[ -t 0 ]]; then
@@ -94,31 +89,35 @@ generate_topic() {
 
 check_deps() {
     local missing=()
+    local cmd
     for cmd in curl flock python3 crontab sha256sum getent; do
-        command -v "$cmd" &>/dev/null || missing+=("$cmd")
+        if ! command -v "$cmd" &>/dev/null; then
+            missing+=("$cmd")
+        fi
     done
     if [[ ${#missing[@]} -gt 0 ]]; then
         echo "❌ Dipendenze mancanti: ${missing[*]}"
         echo "   Installale con il gestore pacchetti della tua distribuzione e riprova."
         exit 1
     fi
+    return 0
 }
 
 version_compare() {
     local v1="$1" v2="$2"
-    if [[ "$v1" == "$v2" ]]; then CMP_RESULT="same"; return; fi
+    if [[ "$v1" == "$v2" ]]; then CMP_RESULT="same"; return 0; fi
     local IFS='.'
     local -a a1=($v1) a2=($v2)
     local i
     for i in 0 1 2; do
         local n1="${a1[$i]:-0}" n2="${a2[$i]:-0}"
-        if (( n1 > n2 )); then CMP_RESULT="newer"; return; fi
-        if (( n1 < n2 )); then CMP_RESULT="older"; return; fi
+        if (( n1 > n2 )); then CMP_RESULT="newer"; return 0; fi
+        if (( n1 < n2 )); then CMP_RESULT="older"; return 0; fi
     done
     CMP_RESULT="same"
+    return 0
 }
 
-# sudo con errore visibile
 sudox() {
     if ! sudo "$@"; then
         echo "❌ Comando sudo fallito: sudo $*"
@@ -127,36 +126,29 @@ sudox() {
     fi
 }
 
-# Il file corrente ($0) è il manager già installato?
 running_installed_manager() {
-    [[ -f "$0" && -r "$0" ]] || return 1
+    if [[ ! -f "$0" || ! -r "$0" ]]; then return 1; fi
     local resolved
     resolved="$(readlink -f "$0")" || return 1
-    [[ "$resolved" == "$(readlink -f "$MANAGER_PATH")" ]]
+    if [[ "$resolved" == "$(readlink -f "$MANAGER_PATH")" ]]; then return 0; fi
+    return 1
 }
 
-# ============================================================
-#   SORGENTE DA INSTALLARE
-# ============================================================
 SRC_FILE=""
 
 resolve_source() {
-    # Caso 1: stiamo GIÀ eseguendo il manager installato -> sorgente = se stesso, nessuna copia necessaria
     if running_installed_manager; then
         SRC_FILE="$MANAGER_PATH"
         echo "→ Stai eseguendo il manager installato: nessuna copia necessaria."
-        return
+        return 0
     fi
 
-    # Caso 2: file locale (scaricato manualmente o già presente sul disco)
     if [[ -f "$0" && -r "$0" && ! "$0" =~ ^(bash|-bash|/bin/bash|/usr/bin/bash)$ ]]; then
         SRC_FILE="$(readlink -f "$0")"
-        echo "→ Sorgente: ${SRC_FILE} (v$(grep -m1 '^VERSION=' "$SRC_FILE" | cut -d= -f2 | tr -d '"'))"
-        return
+        echo "→ Sorgente: ${SRC_FILE}"
+        return 0
     fi
 
-    # Caso 3: pipe (curl | bash) -> il file non esiste su disco, scarico dal remoto
-    # MA verifico che la versione remota sia sensata prima di installare.
     echo "→ Esecuzione da pipe: scarico la versione remota..."
     local tmpfile remote_version
     tmpfile=$(mktemp)
@@ -171,7 +163,7 @@ resolve_source() {
         echo "❌ Il file remoto non è uno script bash valido."
         exit 1
     fi
-    remote_version=$(grep -m1 '^VERSION=' "$tmpfile" | cut -d= -f2 | tr -d '"' || echo "")
+    remote_version=$(grep -m1 '^VERSION=' "$tmpfile" | cut -d= -f2 | tr -d '"' || true)
     if [[ -z "$remote_version" ]]; then
         rm -f "$tmpfile"
         echo "❌ Il file remoto non contiene un numero di versione valido."
@@ -179,48 +171,57 @@ resolve_source() {
         exit 1
     fi
     echo "   Versione remota: v${remote_version} (eseguita: v${VERSION})"
-    if version_compare "$remote_version" "$VERSION" && [[ "$CMP_RESULT" == "older" ]]; then
+    version_compare "$remote_version" "$VERSION"
+    if [[ "$CMP_RESULT" == "older" ]]; then
         rm -f "$tmpfile"
         echo "❌ ATTENZIONE: il repository contiene una versione PIÙ VECCHIA (v${remote_version}) di quella eseguita (v${VERSION})."
         echo "   Installazione annullata per non sovrascrivere con codice obsoleto."
-        echo "   Aggiorna il repository o scarica lo script e lancialo da file locale."
         exit 1
     fi
     SRC_FILE="$tmpfile"
+    return 0
 }
 
 install_manager() {
-    # Se sorgente e destinazione coincidono, non c'è nulla da copiare
     if [[ -n "$SRC_FILE" && "$(readlink -f "$SRC_FILE")" == "$(readlink -f "$MANAGER_PATH")" ]]; then
         echo "  ✓ Manager già presente in $MANAGER_PATH (versione corrente)"
-        return
+        return 0
     fi
 
     echo "→ Copia del manager in ${MANAGER_PATH}..."
     sudox mkdir -p "$INSTALL_DIR"
     sudox cp "$SRC_FILE" "$MANAGER_PATH"
     sudox chmod 755 "$MANAGER_PATH"
-    [[ -f "$MANAGER_PATH" ]] || { echo "❌ Il manager NON è stato copiato: $MANAGER_PATH"; exit 1; }
+    if [[ ! -f "$MANAGER_PATH" ]]; then
+        echo "❌ Il manager NON è stato copiato: $MANAGER_PATH"
+        exit 1
+    fi
     echo "  ✓ Manager installato: $MANAGER_PATH"
+    return 0
 }
 
-# ============================================================
-#   CONFIG
-# ============================================================
 set_config_defaults() {
     NTFY_URL="https://ntfy.sh"
     NTFY_TOPIC="${1:-}"
     NTFY_PRIORITY=3
-    NOTIFY_MODE="changes"           # all | changes | errors
+    NOTIFY_MODE="changes"
     NOTIFY_SCRIPT_UPDATE="yes"
-    LIST_UPDATE_INTERVAL=24         # ore
-    SCRIPT_UPDATE_INTERVAL=48       # ore
+    LIST_UPDATE_INTERVAL=24
+    SCRIPT_UPDATE_INTERVAL=48
     declare -gA BLOCK_STATE=()
     local entry
     for entry in "${DEFAULT_BLOCKLISTS[@]}"; do
         BLOCK_STATE["${entry%%|*}"]=1
     done
     declare -ga CUSTOM_BLOCKLISTS=()
+    return 0
+}
+
+ensure_custom_array() {
+    if [[ -z "${CUSTOM_BLOCKLISTS+x}" ]]; then
+        declare -ga CUSTOM_BLOCKLISTS=()
+    fi
+    return 0
 }
 
 load_config() {
@@ -231,9 +232,12 @@ load_config() {
     fi
     # shellcheck disable=SC1090
     source "$CONF_FILE"
-    [[ "${#BLOCK_STATE[@]}" -gt 0 ]] || set_config_defaults "${NTFY_TOPIC:-}"
-    declare -ga CUSTOM_BLOCKLISTS=("${CUSTOM_BLOCKLISTS[@]:-}")
+    if [[ "${#BLOCK_STATE[@]}" -eq 0 ]]; then
+        set_config_defaults "${NTFY_TOPIC:-}"
+    fi
+    ensure_custom_array
     declare -ga BLOCKLISTS=()
+    return 0
 }
 
 build_active_blocklists() {
@@ -245,9 +249,14 @@ build_active_blocklists() {
             BLOCKLISTS+=("$entry")
         fi
     done
-    for entry in "${CUSTOM_BLOCKLISTS[@]:-}"; do
-        [[ -n "$entry" ]] && BLOCKLISTS+=("$entry")
-    done
+    if [[ "${#CUSTOM_BLOCKLISTS[@]}" -gt 0 ]]; then
+        for entry in "${CUSTOM_BLOCKLISTS[@]}"; do
+            if [[ -n "$entry" ]]; then
+                BLOCKLISTS+=("$entry")
+            fi
+        done
+    fi
+    return 0
 }
 
 write_config() {
@@ -269,23 +278,31 @@ write_config() {
         done
         echo ")"
         echo "declare -ga CUSTOM_BLOCKLISTS=("
-        for entry in "${CUSTOM_BLOCKLISTS[@]:-}"; do
-            [[ -n "$entry" ]] && echo "    \"${entry}\""
-        done
+        if [[ "${#CUSTOM_BLOCKLISTS[@]}" -gt 0 ]]; then
+            for entry in "${CUSTOM_BLOCKLISTS[@]}"; do
+                if [[ -n "$entry" ]]; then
+                    printf '    "%s"\n' "$entry"
+                fi
+            done
+        fi
         echo ")"
         echo "# --- array attivo generato (non modificare) ---"
         echo "ACTIVE_BLOCKLISTS=("
-        for entry in "${BLOCKLISTS[@]}"; do
-            echo "    \"${entry}\""
-        done
+        if [[ "${#BLOCKLISTS[@]}" -gt 0 ]]; then
+            for entry in "${BLOCKLISTS[@]}"; do
+                printf '    "%s"\n' "$entry"
+            done
+        fi
         echo ")"
     } > "$CONF_FILE"
-    [[ -s "$CONF_FILE" ]] || { echo "❌ Config non scritta: $CONF_FILE"; exit 1; }
+    if [[ ! -s "$CONF_FILE" ]]; then
+        echo "❌ Config non scritta: $CONF_FILE"
+        exit 1
+    fi
+    echo "  ✓ Config salvata: $CONF_FILE"
+    return 0
 }
 
-# ============================================================
-#   TUI - WIZARD
-# ============================================================
 wizard_notify_mode() {
     echo ""
     echo "┌─ Notifiche ────────────────────────────────┐"
@@ -299,7 +316,6 @@ wizard_notify_mode() {
     case "$sel" in
         1) NOTIFY_MODE="all" ;;
         3) NOTIFY_MODE="errors" ;;
-        "") ;; # mantiene default "changes"
         *) NOTIFY_MODE="changes" ;;
     esac
     echo "  → Modalità notifiche: $NOTIFY_MODE"
@@ -307,14 +323,20 @@ wizard_notify_mode() {
     local prio; prio=$(ask "Priorità ntfy 1-5 (1=min, 5=max/urgente) [${NTFY_PRIORITY}]: ")
     if [[ "$prio" =~ ^[1-5]$ ]]; then NTFY_PRIORITY="$prio"; fi
     echo "  → Priorità: $NTFY_PRIORITY"
+    return 0
 }
 
 wizard_script_update_notify() {
     echo ""
     echo "Notificare quando è disponibile un aggiornamento dello script?"
     local sel; sel=$(ask "  [S/n]: ")
-    if [[ "$sel" =~ ^[Nn]$ ]]; then NOTIFY_SCRIPT_UPDATE="no"; else NOTIFY_SCRIPT_UPDATE="yes"; fi
+    if [[ "$sel" =~ ^[Nn]$ ]]; then
+        NOTIFY_SCRIPT_UPDATE="no"
+    else
+        NOTIFY_SCRIPT_UPDATE="yes"
+    fi
     echo "  → Notifica aggiornamento script: $NOTIFY_SCRIPT_UPDATE"
+    return 0
 }
 
 wizard_intervals() {
@@ -325,18 +347,24 @@ wizard_intervals() {
     local in_l in_s
     in_l=$(ask "  Aggiornamento liste [${LIST_UPDATE_INTERVAL}h]: ")
     if [[ -n "$in_l" ]]; then
-        if [[ "$in_l" =~ ^[0-9]+$ ]] && (( in_l >= 1 )); then LIST_UPDATE_INTERVAL="$in_l"
-        else echo "  Valore non valido, mantengo ${LIST_UPDATE_INTERVAL}h"; fi
+        if [[ "$in_l" =~ ^[0-9]+$ ]] && (( in_l >= 1 )); then
+            LIST_UPDATE_INTERVAL="$in_l"
+        else
+            echo "  Valore non valido, mantengo ${LIST_UPDATE_INTERVAL}h"
+        fi
     fi
     in_s=$(ask "  Controllo aggiornamenti script [${SCRIPT_UPDATE_INTERVAL}h]: ")
     if [[ -n "$in_s" ]]; then
-        if [[ "$in_s" =~ ^[0-9]+$ ]] && (( in_s >= 1 )); then SCRIPT_UPDATE_INTERVAL="$in_s"
-        else echo "  Valore non valido, mantengo ${SCRIPT_UPDATE_INTERVAL}h"; fi
+        if [[ "$in_s" =~ ^[0-9]+$ ]] && (( in_s >= 1 )); then
+            SCRIPT_UPDATE_INTERVAL="$in_s"
+        else
+            echo "  Valore non valido, mantengo ${SCRIPT_UPDATE_INTERVAL}h"
+        fi
     fi
     echo "  → Liste ogni ${LIST_UPDATE_INTERVAL}h, script ogni ${SCRIPT_UPDATE_INTERVAL}h"
+    return 0
 }
 
-# Checklist interattiva: i numeri attivano/disattivano, 'k' conferma
 wizard_toggle_lists() {
     local i entry url name mark sel num
     while true; do
@@ -350,22 +378,21 @@ wizard_toggle_lists() {
         for entry in "${DEFAULT_BLOCKLISTS[@]}"; do
             url="${entry%%|*}"; name="${entry##*|}"
             mark=" "
-            [[ "${BLOCK_STATE[$url]:-0}" == "1" ]] && mark="x"
+            if [[ "${BLOCK_STATE[$url]:-0}" == "1" ]]; then mark="x"; fi
             printf "  [%s] %2d) %s\n" "$mark" "$i" "$name"
-            ((i++)) || true
+            i=$((i+1))
         done
         sel=$(ask "Selezione [k]: ")
         if [[ -z "$sel" || "$sel" == "k" ]]; then
             echo "  → Checklist confermata"
-            return
+            return 0
         elif [[ "$sel" == "a" ]]; then
             for entry in "${DEFAULT_BLOCKLISTS[@]}"; do BLOCK_STATE["${entry%%|*}"]=1; done
         elif [[ "$sel" == "n" ]]; then
             for entry in "${DEFAULT_BLOCKLISTS[@]}"; do BLOCK_STATE["${entry%%|*}"]=0; done
         else
             for num in $sel; do
-                [[ "$num" =~ ^[0-9]+$ ]] || continue
-                if (( num >= 1 && num <= ${#DEFAULT_BLOCKLISTS[@]} )); then
+                if [[ "$num" =~ ^[0-9]+$ ]] && (( num >= 1 && num <= ${#DEFAULT_BLOCKLISTS[@]} )); then
                     entry="${DEFAULT_BLOCKLISTS[$((num-1))]}"
                     url="${entry%%|*}"
                     if [[ "${BLOCK_STATE[$url]:-0}" == "1" ]]; then
@@ -380,7 +407,7 @@ wizard_toggle_lists() {
 }
 
 wizard_custom_lists() {
-    local i entry url name sel more test tmp size
+    local i entry url name sel test tmp size keep
     while true; do
         echo ""
         echo "┌─ Liste personalizzate ─────────────────────┐"
@@ -388,11 +415,13 @@ wizard_custom_lists() {
         echo "│  2) Rimuovi lista                          │"
         echo "│  k) Torna al menu                          │"
         echo "└────────────────────────────────────────────┘"
-        if [[ ${#CUSTOM_BLOCKLISTS[@]} -gt 0 ]]; then
+        if [[ "${#CUSTOM_BLOCKLISTS[@]}" -gt 0 ]]; then
             i=1
             for entry in "${CUSTOM_BLOCKLISTS[@]}"; do
-                echo "   $i) ${entry##*|}"
-                ((i++)) || true
+                if [[ -n "$entry" ]]; then
+                    echo "   $i) ${entry##*|}"
+                    i=$((i+1))
+                fi
             done
         else
             echo "   (nessuna lista personalizzata)"
@@ -400,11 +429,10 @@ wizard_custom_lists() {
         sel=$(ask "Scelta [k]: ")
         case "$sel" in
             1)
-                more=$(ask "  URL lista (vuoto per annullare): ")
-                [[ -z "$more" ]] && continue
-                url="$more"
+                url=$(ask "  URL lista (vuoto per annullare): ")
+                if [[ -z "$url" ]]; then continue; fi
                 name=$(ask "  Nome descrittivo: ")
-                [[ -z "$name" ]] && name="$url"
+                if [[ -z "$name" ]]; then name="$url"; fi
                 test=$(ask "  Testare il download? [S/n]: ")
                 if [[ ! "$test" =~ ^[Nn]$ ]]; then
                     tmp=$(mktemp)
@@ -419,23 +447,32 @@ wizard_custom_lists() {
                 echo "    ✓ Aggiunta: $name"
                 ;;
             2)
-                if [[ ${#CUSTOM_BLOCKLISTS[@]} -eq 0 ]]; then echo "  Nessuna lista da rimuovere"; continue; fi
+                if [[ "${#CUSTOM_BLOCKLISTS[@]}" -eq 0 ]]; then
+                    echo "  Nessuna lista da rimuovere"
+                    continue
+                fi
                 sel=$(ask "  Numero della lista da rimuovere (vuoto per annullare): ")
-                [[ -z "$sel" ]] && continue
+                if [[ -z "$sel" ]]; then continue; fi
                 if [[ "$sel" =~ ^[0-9]+$ ]] && (( sel >= 1 && sel <= ${#CUSTOM_BLOCKLISTS[@]} )); then
-                    local -a new_custom=()
+                    local -a kept=()
                     i=1
                     for entry in "${CUSTOM_BLOCKLISTS[@]}"; do
-                        (( i != sel )) && new_custom+=("$entry")
-                        ((i++)) || true
+                        if (( i != sel )) && [[ -n "$entry" ]]; then
+                            kept+=("$entry")
+                        fi
+                        i=$((i+1))
                     done
-                    CUSTOM_BLOCKLISTS=("${new_custom[@]:-}")
+                    if [[ "${#kept[@]}" -gt 0 ]]; then
+                        CUSTOM_BLOCKLISTS=("${kept[@]}")
+                    else
+                        CUSTOM_BLOCKLISTS=()
+                    fi
                     echo "  ✓ Rimossa"
                 else
                     echo "  Numero non valido"
                 fi
                 ;;
-            *) return ;;
+            *) return 0 ;;
         esac
     done
 }
@@ -450,10 +487,11 @@ run_wizard() {
     wizard_intervals
     wizard_toggle_lists
     wizard_custom_lists
+    return 0
 }
 
-# Menu impostazioni TUI (settings)
 run_settings_menu() {
+    local sel
     while true; do
         echo ""
         echo "╔══════════════════════════════════════════════════╗"
@@ -466,23 +504,25 @@ run_settings_menu() {
         echo "  5) Liste personalizzate"
         echo "  s) Salva ed esci"
         echo "  q) Esci senza salvare"
-        local sel; sel=$(ask "Scelta: ")
+        sel=$(ask "Scelta: ")
         case "$sel" in
             1) wizard_notify_mode ;;
             2) wizard_script_update_notify ;;
             3) wizard_intervals ;;
             4) wizard_toggle_lists ;;
             5) wizard_custom_lists ;;
-            s|S) write_config; write_updater_scripts; echo " ✅ Impostazioni salvate."; return ;;
-            q|Q) echo " Uscito senza salvare."; return ;;
+            s|S)
+                write_config
+                write_updater_scripts
+                echo " ✅ Impostazioni salvate."
+                return 0
+                ;;
+            q|Q) echo " Uscito senza salvare."; return 0 ;;
             *) echo " Scelta non valida" ;;
         esac
     done
 }
 
-# ============================================================
-#   UPDATER SCRIPTS (generati con placeholder sostituiti)
-# ============================================================
 write_updater_scripts() {
     local dir
     dir=$(mktemp -d)
@@ -490,7 +530,6 @@ write_updater_scripts() {
     # ---------- 1) LIST UPDATER ----------
     cat > "${dir}/${LIST_APP}.sh" << 'LIST_UPDATER'
 #!/usr/bin/env bash
-# Aggiorna le liste IP e rigenera ipfilter.dat (gestione intervalli interna)
 set -euo pipefail
 trap 'echo "" >&2; echo "❌ ERRORE list-update alla riga $LINENO" >&2; exit 1' ERR
 
@@ -509,23 +548,35 @@ notify() {
     local priority="${NTFY_PRIORITY:-3}"
     case "${NOTIFY_MODE:-changes}" in
         all) ;;
-        changes) [[ "$kind" == "changes" || "$kind" == "error" || "$kind" == "update" ]] || return 0 ;;
-        errors)  [[ "$kind" == "error" ]] || return 0 ;;
+        changes)
+            if [[ "$kind" != "changes" && "$kind" != "error" && "$kind" != "update" ]]; then
+                return 0
+            fi
+            ;;
+        errors)
+            if [[ "$kind" != "error" ]]; then return 0; fi
+            ;;
         *) return 0 ;;
     esac
     curl -s -o /dev/null --connect-timeout 10 --max-time 30 \
         -X POST "${NTFY_URL}/${NTFY_TOPIC}" \
         -H "Title: ${title}" -H "Priority: ${priority}" -H "Tags: shield" \
         -d "${message}" || true
+    return 0
 }
 
 exec 200>"$LOCK_FILE"
 flock -n 200 || { log "Skipped: another list update is running"; exit 0; }
 
-[[ -f "$CONF_FILE" ]] || { log "Config non trovata: $CONF_FILE"; exit 1; }
+if [[ ! -f "$CONF_FILE" ]]; then
+    log "Config non trovata: $CONF_FILE"
+    exit 1
+fi
 # shellcheck disable=SC1090
 source "$CONF_FILE"
-[[ "${#ACTIVE_BLOCKLISTS[@]}" -gt 0 ]] || ACTIVE_BLOCKLISTS=()
+if [[ "${#ACTIVE_BLOCKLISTS[@]}" -eq 0 ]]; then
+    ACTIVE_BLOCKLISTS=()
+fi
 
 mkdir -p "$CONFIG_DIR" "$BLOCKLIST_DIR"
 if [[ ! -f "$STATE_FILE" ]]; then
@@ -533,7 +584,8 @@ if [[ ! -f "$STATE_FILE" ]]; then
 fi
 
 now=$(date +%s)
-last=$(grep '^LAST_LIST_UPDATE=' "$STATE_FILE" | cut -d= -f2 || echo 0)
+last=$(grep '^LAST_LIST_UPDATE=' "$STATE_FILE" | cut -d= -f2 || true)
+if [[ -z "$last" ]]; then last=0; fi
 if (( now - last < LIST_UPDATE_INTERVAL * 3600 )); then
     remaining=$(( (last + LIST_UPDATE_INTERVAL*3600 - now) / 60 ))
     log "List update: non ancora ora (prossimo tra ${remaining} min)"
@@ -560,15 +612,18 @@ def lines_from(path):
         head = raw.read(2)
     if head == b'\x1f\x8b':
         with gzip.open(path, 'rt', errors='ignore') as f:
-            yield from f
+            for line in f:
+                yield line
     elif head[:2] == b'PK':
         with zipfile.ZipFile(path) as z:
             for n in z.namelist():
                 with z.open(n) as member:
-                    yield from io.TextIOWrapper(member, errors='ignore')
+                    for line in io.TextIOWrapper(member, errors='ignore'):
+                        yield line
     else:
         with open(path, 'r', errors='ignore') as f:
-            yield from f
+            for line in f:
+                yield line
 
 IP = r'\d{1,3}(?:\.\d{1,3}){3}'
 re_range  = re.compile(rf'^({IP})\s*[-\u2013]\s*({IP})$')
@@ -606,15 +661,17 @@ main()
 PYEOF
 
 TOTAL=0 SUCCESS=0 FAILED=0 FAILED_LISTS=""
+count_lines() { wc -l < "$OUTPUT_FILE" | tr -d ' '; }
+
 for entry in "${ACTIVE_BLOCKLISTS[@]}"; do
-    [[ -z "$entry" || "$entry" == \#* ]] && continue
+    if [[ -z "$entry" || "$entry" == \#* ]]; then continue; fi
     url="${entry%%|*}"; name="${entry##*|}"
     log "Downloading: $name"
     tmpfile="${TMPD}/$(echo "$name" | tr -c 'A-Za-z0-9._' '_')"
     if curl -fsSL --connect-timeout 30 --max-time 120 --retry 2 -o "$tmpfile" "$url" 2>/dev/null; then
-        before=$(grep -c " - " "$OUTPUT_FILE" || echo 0)
+        before=$(count_lines)
         python3 "${TMPD}/convert.py" "$tmpfile" "$name" "$OUTPUT_FILE" || true
-        after=$(grep -c " - " "$OUTPUT_FILE" || echo 0)
+        after=$(count_lines)
         added=$((after - before))
         TOTAL=$((TOTAL + added)); SUCCESS=$((SUCCESS + 1))
         log "  + $name: +$added regole"
@@ -625,16 +682,16 @@ for entry in "${ACTIVE_BLOCKLISTS[@]}"; do
 done
 
 if [[ $SUCCESS -eq 0 ]]; then
-    log "!!! NESSUNA lista scaricata: ipfilter.dat NON aggiornato. Rimane quello esistente."
+    log "!!! NESSUNA lista scaricata: ipfilter.dat NON aggiornato."
     notify "qBittorrent Blocklist" "❌ Nessuna lista scaricata: filtro NON aggiornato." "error"
     exit 1
 fi
 
 new_hash=$(grep -v '^# Updated:' "$OUTPUT_FILE" | sha256sum | cut -d' ' -f1)
-old_hash=$(grep '^LIST_HASH=' "$STATE_FILE" 2>/dev/null | cut -d= -f2 || echo "")
+old_hash=$(grep '^LIST_HASH=' "$STATE_FILE" 2>/dev/null | cut -d= -f2 || true)
 
 kind="info"; status="Aggiornamento completato"
-[[ $FAILED -gt 0 ]] && { kind="error"; status="Aggiornamento parziale"; }
+if [[ $FAILED -gt 0 ]]; then kind="error"; status="Aggiornamento parziale"; fi
 
 changes_msg=""
 if [[ -n "$old_hash" && "$old_hash" != "$new_hash" ]]; then
@@ -653,8 +710,8 @@ MSG="${status}
 • Liste scaricate: ${SUCCESS}/${#ACTIVE_BLOCKLISTS[@]}
 • Regole totali: ${TOTAL}
 • Fallite: ${FAILED}"
-[[ -n "$changes_msg" ]] && MSG+=$'\n'"${changes_msg}"
-[[ -n "$FAILED_LISTS" ]] && MSG+=$'\n'"• Fallite: ${FAILED_LISTS%, }"
+if [[ -n "$changes_msg" ]]; then MSG+=$'\n'"${changes_msg}"; fi
+if [[ -n "$FAILED_LISTS" ]]; then MSG+=$'\n'"• Fallite: ${FAILED_LISTS%, }"; fi
 
 log "$MSG"
 notify "qBittorrent Blocklist" "$MSG" "$kind"
@@ -664,7 +721,6 @@ LIST_UPDATER
     # ---------- 2) SCRIPT CHECK UPDATER ----------
     cat > "${dir}/${CHECK_APP}.sh" << 'CHECK_UPDATER'
 #!/usr/bin/env bash
-# Controlla se esiste una nuova versione dello script manager (check orario, intervallo interno)
 set -euo pipefail
 trap 'echo "" >&2; echo "❌ ERRORE script-check alla riga $LINENO" >&2; exit 1' ERR
 
@@ -684,8 +740,14 @@ notify() {
     local priority="${NTFY_PRIORITY:-3}"
     case "${NOTIFY_MODE:-changes}" in
         all) ;;
-        changes) [[ "$kind" == "changes" || "$kind" == "error" || "$kind" == "update" ]] || return 0 ;;
-        errors)  [[ "$kind" == "error" ]] || return 0 ;;
+        changes)
+            if [[ "$kind" != "changes" && "$kind" != "error" && "$kind" != "update" ]]; then
+                return 0
+            fi
+            ;;
+        errors)
+            if [[ "$kind" != "error" ]]; then return 0; fi
+            ;;
         *) return 0 ;;
     esac
     if [[ "$kind" == "update" && "${NOTIFY_SCRIPT_UPDATE:-yes}" != "yes" ]]; then
@@ -695,12 +757,13 @@ notify() {
         -X POST "${NTFY_URL}/${NTFY_TOPIC}" \
         -H "Title: ${title}" -H "Priority: ${priority}" -H "Tags: arrow_up" \
         -d "${message}" || true
+    return 0
 }
 
 exec 201>"$LOCK_FILE"
 flock -n 201 || exit 0
 
-[[ -f "$CONF_FILE" ]] || exit 1
+if [[ ! -f "$CONF_FILE" ]]; then exit 1; fi
 # shellcheck disable=SC1090
 source "$CONF_FILE"
 
@@ -710,7 +773,8 @@ if [[ ! -f "$STATE_FILE" ]]; then
 fi
 
 now=$(date +%s)
-last=$(grep '^LAST_SCRIPT_CHECK=' "$STATE_FILE" | cut -d= -f2 || echo 0)
+last=$(grep '^LAST_SCRIPT_CHECK=' "$STATE_FILE" | cut -d= -f2 || true)
+if [[ -z "$last" ]]; then last=0; fi
 if (( now - last < SCRIPT_UPDATE_INTERVAL * 3600 )); then
     remaining=$(( (last + SCRIPT_UPDATE_INTERVAL*3600 - now) / 60 ))
     log "Script check: non ancora ora (prossimo tra ${remaining} min)"
@@ -720,7 +784,7 @@ fi
 log "=== Script update check started ==="
 remote_version=$(curl -fsSL --connect-timeout 10 --max-time 30 "${SCRIPT_REMOTE_URL}" 2>/dev/null | grep -m1 '^VERSION=' | sed 's/VERSION=//' | tr -d '"' | tr -d "'" | xargs) || true
 
-nv=$(grep '^NOTIFIED_VERSION=' "$STATE_FILE" 2>/dev/null | cut -d= -f2 || echo "")
+nv=$(grep '^NOTIFIED_VERSION=' "$STATE_FILE" 2>/dev/null | cut -d= -f2 || true)
 { echo "LAST_SCRIPT_CHECK=${now}"; echo "NOTIFIED_VERSION=${nv}"; } > "$STATE_FILE"
 
 if [[ -z "$remote_version" ]]; then
@@ -757,13 +821,11 @@ fi
 log "=== Script update check finished ==="
 CHECK_UPDATER
 
-    # Sostituzione placeholder
     sed -i "s|__CONFIG_DIR__|${CONFIG_DIR}|g" "${dir}/${LIST_APP}.sh" "${dir}/${CHECK_APP}.sh"
     sed -i "s|__VERSION__|${VERSION}|g" "${dir}/${CHECK_APP}.sh"
     sed -i "s|__REMOTE_URL__|${REMOTE_URL}|g" "${dir}/${CHECK_APP}.sh"
     sed -i "s|__MANAGER_NAME__|${MANAGER_NAME}|g" "${dir}/${CHECK_APP}.sh"
 
-    # Verifica che i placeholder siano stati sostituiti
     if grep -q '__CONFIG_DIR__\|__VERSION__\|__REMOTE_URL__\|__MANAGER_NAME__' \
         "${dir}/${LIST_APP}.sh" "${dir}/${CHECK_APP}.sh"; then
         echo "❌ Placeholder non sostituiti negli updater: installazione annullata."
@@ -775,41 +837,44 @@ CHECK_UPDATER
     sudox cp "${dir}/${LIST_APP}.sh" "$LIST_SCRIPT"
     sudox cp "${dir}/${CHECK_APP}.sh" "$CHECK_SCRIPT"
     sudox chmod 755 "$LIST_SCRIPT" "$CHECK_SCRIPT"
-    [[ -f "$LIST_SCRIPT" && -f "$CHECK_SCRIPT" ]] || { echo "❌ Updater non copiati in ${INSTALL_DIR}"; rm -rf "$dir"; exit 1; }
+    if [[ ! -f "$LIST_SCRIPT" || ! -f "$CHECK_SCRIPT" ]]; then
+        echo "❌ Updater non copiati in ${INSTALL_DIR}"
+        rm -rf "$dir"
+        exit 1
+    fi
     rm -rf "$dir"
     echo "  ✓ Updater generati: ${LIST_SCRIPT}, ${CHECK_SCRIPT}"
+    return 0
 }
 
-# ============================================================
-#   CRON
-# ============================================================
 add_cron_line() {
     local tag="$1" script="$2"
-    crontab -l 2>/dev/null | grep -vF "$tag" | crontab - || true
+    (crontab -l 2>/dev/null | grep -vF "$tag" | crontab -) || true
     if ! (crontab -l 2>/dev/null; echo "${CRON_SCHEDULE} ${script} >> ${LOG_FILE} 2>&1 ${tag}") | crontab -; then
         echo "❌ Impossibile scrivere il crontab per ${script}."
         exit 1
     fi
-    crontab -l 2>/dev/null | grep -qF "$tag" || {
+    if ! crontab -l 2>/dev/null | grep -qF "$tag"; then
         echo "❌ La voce cron per ${script} non risulta nel crontab."
         exit 1
-    }
+    fi
+    return 0
 }
 
-# ============================================================
-#   VERIFICA FINALE INSTALLAZIONE
-# ============================================================
 verify_install() {
-    local problems=0 line label path
+    local problems=0 label path
+    local lines=(
+        "manager|$MANAGER_PATH"
+        "updater liste|$LIST_SCRIPT"
+        "updater check|$CHECK_SCRIPT"
+        "config|$CONF_FILE"
+        "stato liste|$STATE_FILE"
+        "log|$LOG_FILE"
+        "ipfilter.dat|$OUTPUT_FILE"
+    )
 
-    for line in \
-        "manager|$MANAGER_PATH" \
-        "updater liste|$LIST_SCRIPT" \
-        "updater check|$CHECK_SCRIPT" \
-        "config|$CONF_FILE" \
-        "stato liste|$STATE_FILE" \
-        "log|$LOG_FILE"; do
-        label="${line%%|*}"; path="${line##*|}"
+    for item in "${lines[@]}"; do
+        label="${item%%|*}"; path="${item##*|}"
         if [[ -f "$path" ]]; then
             echo "  ✓ ${label}: ${path}"
         else
@@ -818,22 +883,28 @@ verify_install() {
         fi
     done
 
-    [[ -f "$OUTPUT_FILE" ]] && echo "  ✓ ipfilter.dat: ${OUTPUT_FILE}" || { echo "  ❌ MANCA ipfilter.dat: ${OUTPUT_FILE}"; problems=$((problems+1)); }
-
-    crontab -l 2>/dev/null | grep -qF "$CRON_TAG_LIST" && echo "  ✓ cron liste: presente" || { echo "  ❌ cron liste ASSENTE"; problems=$((problems+1)); }
-    crontab -l 2>/dev/null | grep -qF "$CRON_TAG_CHECK" && echo "  ✓ cron check: presente" || { echo "  ❌ cron check ASSENTE"; problems=$((problems+1)); }
+    if crontab -l 2>/dev/null | grep -qF "$CRON_TAG_LIST"; then
+        echo "  ✓ cron liste: presente"
+    else
+        echo "  ❌ cron liste ASSENTE"
+        problems=$((problems+1))
+    fi
+    if crontab -l 2>/dev/null | grep -qF "$CRON_TAG_CHECK"; then
+        echo "  ✓ cron check: presente"
+    else
+        echo "  ❌ cron check ASSENTE"
+        problems=$((problems+1))
+    fi
 
     echo ""
     if (( problems > 0 )); then
-        echo " ❌ INSTALLAZIONE INCOMPLETA: ${problems} problema/i sopra. Correggili e riesegui '${MANAGER_NAME} install'."
+        echo " ❌ INSTALLAZIONE INCOMPLETA: ${problems} problema/i. Correggili e riesegui '${MANAGER_NAME} install'."
         exit 1
     fi
     echo " ✅ Verifica installazione: tutti i componenti presenti."
+    return 0
 }
 
-# ============================================================
-#   COMANDI
-# ============================================================
 cmd_install() {
     echo ""
     echo "╔══════════════════════════════════════════════════╗"
@@ -852,8 +923,6 @@ cmd_install() {
     echo "→ Installazione manager..."
     install_manager
 
-    # Se NON stiamo già eseguendo il manager installato, rilanciamo da lì,
-    # così l'utente lavora sempre con il manager ufficiale.
     if ! running_installed_manager; then
         echo ""
         echo "→ Relaunch dal manager installato..."
@@ -863,7 +932,10 @@ cmd_install() {
     if [[ -f "$CONF_FILE" ]]; then
         echo "⚠️  Installazione già presente."
         local overwrite; overwrite=$(ask "   Sovrascrivere? [y/N] ")
-        [[ ! "$overwrite" =~ ^[Yy]$ ]] && { echo "Annullato."; exit 0; }
+        if [[ ! "$overwrite" =~ ^[Yy]$ ]]; then
+            echo "Annullato."
+            exit 0
+        fi
         echo ""
     fi
 
@@ -878,7 +950,6 @@ cmd_install() {
     set_config_defaults "$topic"
     run_wizard
     write_config
-    echo "  ✓ Config salvata: $CONF_FILE"
 
     echo "→ Installazione updater (liste + check script)..."
     write_updater_scripts
@@ -900,7 +971,9 @@ METAEOF
 
     echo ""
     echo "→ Esecuzione primo aggiornamento liste..."
-    "$LIST_SCRIPT" || echo "  ⚠️  Primo aggiornamento con problemi: controlla il log (${LOG_FILE}). Il cron riproverà."
+    if ! "$LIST_SCRIPT"; then
+        echo "  ⚠️  Primo aggiornamento con problemi: controlla il log (${LOG_FILE}). Il cron riproverà."
+    fi
 
     echo ""
     echo "→ VERIFICA FINALE DELL'INSTALLAZIONE"
@@ -928,11 +1001,13 @@ METAEOF
     echo ""
     echo " 🛠️  Per modificare le preferenze: ${MANAGER_NAME} settings"
     echo ""
+    return 0
 }
 
 cmd_settings() {
     load_config
     run_settings_menu
+    return 0
 }
 
 cmd_uninstall() {
@@ -940,14 +1015,18 @@ cmd_uninstall() {
     echo "→ Rimozione cron..."
     local removed=0
     if crontab -l 2>/dev/null | grep -qF "$CRON_TAG_LIST"; then
-        crontab -l 2>/dev/null | grep -vF "$CRON_TAG_LIST" | crontab -
-        echo "  ✓ Cron liste rimosso"; removed=1
+        (crontab -l 2>/dev/null | grep -vF "$CRON_TAG_LIST" | crontab -) || true
+        echo "  ✓ Cron liste rimosso"
+        removed=1
     fi
     if crontab -l 2>/dev/null | grep -qF "$CRON_TAG_CHECK"; then
-        crontab -l 2>/dev/null | grep -vF "$CRON_TAG_CHECK" | crontab -
-        echo "  ✓ Cron script rimosso"; removed=1
+        (crontab -l 2>/dev/null | grep -vF "$CRON_TAG_CHECK" | crontab -) || true
+        echo "  ✓ Cron script rimosso"
+        removed=1
     fi
-    [[ $removed -eq 0 ]] && echo "  – Nessun cron presente"
+    if [[ $removed -eq 0 ]]; then
+        echo "  – Nessun cron presente"
+    fi
 
     echo "→ Rimozione updater..."
     if [[ -f "$LIST_SCRIPT" ]]; then sudox rm -f "$LIST_SCRIPT"; echo "  ✓ $LIST_SCRIPT rimosso"; else echo "  – Non trovato"; fi
@@ -966,16 +1045,25 @@ cmd_uninstall() {
     rm -f "$META_FILE"
 
     local confirm_log; confirm_log=$(ask "→ Rimuovere il log (${LOG_FILE})? [y/N] ")
-    if [[ "$confirm_log" =~ ^[Yy]$ ]]; then rm -f "$LOG_FILE"; echo "  ✓ Log rimosso"; else echo "  – Log conservato"; fi
+    if [[ "$confirm_log" =~ ^[Yy]$ ]]; then
+        rm -f "$LOG_FILE"; echo "  ✓ Log rimosso"
+    else
+        echo "  – Log conservato"
+    fi
 
     echo ""
     local confirm_self; confirm_self=$(ask "→ Rimuovere anche il manager (${MANAGER_PATH})? [y/N] ")
-    if [[ "$confirm_self" =~ ^[Yy]$ ]]; then sudox rm -f "$MANAGER_PATH"; echo "  ✓ Manager rimosso"; else echo "  – Manager conservato"; fi
+    if [[ "$confirm_self" =~ ^[Yy]$ ]]; then
+        sudox rm -f "$MANAGER_PATH"; echo "  ✓ Manager rimosso"
+    else
+        echo "  – Manager conservato"
+    fi
 
     echo ""
     echo " ✅ DISINSTALLAZIONE COMPLETATA"
     echo " ⚠️  Disabilita il filtro IP in qBittorrent."
     echo ""
+    return 0
 }
 
 cmd_status() {
@@ -997,7 +1085,7 @@ cmd_status() {
 
     if [[ -f "$OUTPUT_FILE" ]]; then
         local lines size
-        lines=$(grep -c "^[0-9]" "$OUTPUT_FILE" 2>/dev/null || echo 0)
+        lines=$(awk '/^[0-9]/{n++} END{print n+0}' "$OUTPUT_FILE" 2>/dev/null || echo 0)
         size=$(du -h "$OUTPUT_FILE" | cut -f1)
         echo " ✓ ipfilter.dat: ${lines} regole (${size})"
     else
@@ -1006,32 +1094,49 @@ cmd_status() {
 
     if [[ -f "$STATE_FILE" ]]; then
         local lru
-        lru=$(grep '^LAST_LIST_UPDATE=' "$STATE_FILE" | cut -d= -f2 || echo 0)
-        [[ "$lru" != "0" ]] && echo " ✓ Ultimo agg. liste:   $(date -d "@${lru}" '+%Y-%m-%d %H:%M')"
+        lru=$(grep '^LAST_LIST_UPDATE=' "$STATE_FILE" | cut -d= -f2 || true)
+        if [[ -n "$lru" && "$lru" != "0" ]]; then
+            echo " ✓ Ultimo agg. liste:   $(date -d "@${lru}" '+%Y-%m-%d %H:%M')"
+        fi
     fi
     if [[ -f "$SCRIPT_STATE_FILE" ]]; then
         local lsc
-        lsc=$(grep '^LAST_SCRIPT_CHECK=' "$SCRIPT_STATE_FILE" | cut -d= -f2 || echo 0)
-        [[ "$lsc" != "0" ]] && echo " ✓ Ultimo check script: $(date -d "@${lsc}" '+%Y-%m-%d %H:%M')"
+        lsc=$(grep '^LAST_SCRIPT_CHECK=' "$SCRIPT_STATE_FILE" | cut -d= -f2 || true)
+        if [[ -n "$lsc" && "$lsc" != "0" ]]; then
+            echo " ✓ Ultimo check script: $(date -d "@${lsc}" '+%Y-%m-%d %H:%M')"
+        fi
     fi
 
-    crontab -l 2>/dev/null | grep -qF "$CRON_TAG_LIST" && echo " ✓ Cron liste: attivo" || echo " ✗ Cron liste: NON configurato"
-    crontab -l 2>/dev/null | grep -qF "$CRON_TAG_CHECK" && echo " ✓ Cron script: attivo" || echo " ✗ Cron script: NON configurato"
+    if crontab -l 2>/dev/null | grep -qF "$CRON_TAG_LIST"; then
+        echo " ✓ Cron liste: attivo"
+    else
+        echo " ✗ Cron liste: NON configurato"
+    fi
+    if crontab -l 2>/dev/null | grep -qF "$CRON_TAG_CHECK"; then
+        echo " ✓ Cron script: attivo"
+    else
+        echo " ✗ Cron script: NON configurato"
+    fi
 
     if [[ -f "$LOG_FILE" ]]; then
-        echo ""; echo " 📄 Ultimo log:"
+        echo ""
+        echo " 📄 Ultimo log:"
         tail -5 "$LOG_FILE" | sed 's/^/   /'
     fi
     echo ""
+    return 0
 }
 
 cmd_run() {
-    if [[ ! -f "$LIST_SCRIPT" ]]; then echo "❌ Non installato. Esegui: ${MANAGER_NAME} install"; exit 1; fi
+    if [[ ! -f "$LIST_SCRIPT" ]]; then
+        echo "❌ Non installato. Esegui: ${MANAGER_NAME} install"
+        exit 1
+    fi
     echo "→ Forzo aggiornamento liste (ignora intervallo)..."
     if [[ -f "$STATE_FILE" ]]; then
         local lh lr
-        lh=$(grep '^LIST_HASH=' "$STATE_FILE" | cut -d= -f2 || echo "")
-        lr=$(grep '^LAST_LIST_RULES=' "$STATE_FILE" | cut -d= -f2 || echo "0")
+        lh=$(grep '^LIST_HASH=' "$STATE_FILE" | cut -d= -f2 || true)
+        lr=$(grep '^LAST_LIST_RULES=' "$STATE_FILE" | cut -d= -f2 || true)
         { echo "LIST_HASH=${lh}"; echo "LAST_LIST_UPDATE=0"; echo "LAST_LIST_RULES=${lr}"; } > "$STATE_FILE"
     fi
     "$LIST_SCRIPT"
@@ -1044,28 +1149,46 @@ cmd_update() {
     local remote_version=""
     remote_version=$(curl -fsSL --connect-timeout 10 --max-time 30 "$REMOTE_URL" 2>/dev/null | grep -m1 '^VERSION=' | sed 's/VERSION=//' | tr -d '"' | tr -d "'" | xargs) || true
     if [[ -z "$remote_version" ]]; then
-        echo "  Remoto: NON RAGGIUNGIBILE"; echo "❌ Impossibile verificare."; exit 1
+        echo "  Remoto: NON RAGGIUNGIBILE"
+        echo "❌ Impossibile verificare."
+        exit 1
     fi
-    echo "  Remoto:  v${remote_version}"; echo ""
+    echo "  Remoto:  v${remote_version}"
+    echo ""
     version_compare "$remote_version" "$VERSION"
     if [[ "$CMP_RESULT" != "newer" ]]; then
-        echo "✅ Sei già all'ultima versione (v${VERSION})."; echo ""; return 0
+        echo "✅ Sei già all'ultima versione (v${VERSION})."
+        echo ""
+        return 0
     fi
-    echo "🔄 Aggiornamento: v${VERSION} → v${remote_version}"; echo ""
+    echo "🔄 Aggiornamento: v${VERSION} → v${remote_version}"
+    echo ""
     local confirm; confirm=$(ask "→ Procedere? [Y/n] ")
-    [[ "$confirm" =~ ^[Nn]$ ]] && { echo "Annullato."; return 0; }
+    if [[ "$confirm" =~ ^[Nn]$ ]]; then
+        echo "Annullato."
+        return 0
+    fi
 
     local tmpfile; tmpfile=$(mktemp)
     if ! curl -fsSL --connect-timeout 30 --max-time 60 -o "$tmpfile" "$REMOTE_URL"; then
-        rm -f "$tmpfile"; echo "❌ Download fallito."; exit 1
+        rm -f "$tmpfile"
+        echo "❌ Download fallito."
+        exit 1
     fi
-    head -1 "$tmpfile" | grep -q "bash" || { rm -f "$tmpfile"; echo "❌ File non valido."; exit 1; }
-    sudox cp "$tmpfile" "$MANAGER_PATH"; sudox chmod 755 "$MANAGER_PATH"; rm -f "$tmpfile"
+    if ! head -1 "$tmpfile" | grep -q "bash"; then
+        rm -f "$tmpfile"
+        echo "❌ File non valido."
+        exit 1
+    fi
+    sudox cp "$tmpfile" "$MANAGER_PATH"
+    sudox chmod 755 "$MANAGER_PATH"
+    rm -f "$tmpfile"
     echo "  ✓ Aggiornato a v${remote_version}"
     echo ""
     echo " ⚠️  Per rigenerare gli updater con la nuova versione:"
-    echo "   ${MANAGER_NAME} settings  →  salva"
+    echo "   ${MANAGER_NAME} settings  →  s (salva)"
     echo ""
+    return 0
 }
 
 cmd_help() {
@@ -1092,14 +1215,11 @@ Oppure (consigliato, usa il file scaricato senza ri-download):
   curl -fsSL ${REMOTE_URL} -o qbbm.sh && bash qbbm.sh install
 
 EOF
+    return 0
 }
 
-# --- ENTRY POINT ---
 case "${1:-help}" in
     install)
-        # Solo se arriviamo da pipe ($0 è bash): risolvi sorgente remota e exec dal manager.
-        # Se invece $0 è un file reale, cmd_install gestisce tutto, incluso il caso
-        # in cui il file È il manager installato (nessuna copia, nessun exec loop).
         if [[ ! -f "$0" ]] || [[ "$0" == "bash" || "$0" == "-bash" || "$0" == "/bin/bash" || "$0" == "/usr/bin/bash" ]]; then
             check_deps
             resolve_source
