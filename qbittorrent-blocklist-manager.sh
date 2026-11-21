@@ -2,8 +2,10 @@
 # ============================================================
 # qbittorrent-blocklist-manager.sh
 # Gestione completa del filtro IP per qBittorrent
-# Versione: 3.0.1
+# Versione: 3.0.2
 #
+# - Installazione dal file in esecuzione (niente ri-download alla cieca)
+# - Errori SEMPRE visibili: trap ERR + verifica finale dell'installazione
 # - TUI interattiva (install / settings)
 # - Checklist per attivare/disattivare/aggiungere/rimuovere liste
 # - Due updater separati (liste + check script) su due cron distinti
@@ -12,8 +14,9 @@
 # ============================================================
 
 set -euo pipefail
+trap 'echo "" >&2; echo "❌ ERRORE alla riga $LINENO: installazione interrotta." >&2; exit 1' ERR
 
-VERSION="3.0.1"
+VERSION="3.0.2"
 REMOTE_URL="https://raw.githubusercontent.com/xunil89/qbittorrent-blocklist-manager/refs/heads/main/qbittorrent-blocklist-manager.sh"
 INSTALL_DIR="/usr/local/bin"
 
@@ -33,7 +36,7 @@ if [[ -n "${SUDO_USER:-}" ]]; then
     REAL_USER="${SUDO_USER}"
     REAL_HOME="$(getent passwd "${SUDO_USER}" | cut -d: -f6)"
 else
-    REAL_USER="${USER}"
+    REAL_USER="${USER:-$(id -un)}"
     REAL_HOME="${HOME}"
 fi
 
@@ -91,12 +94,12 @@ generate_topic() {
 
 check_deps() {
     local missing=()
-    for cmd in curl flock python3 crontab sha256sum; do
+    for cmd in curl flock python3 crontab sha256sum getent; do
         command -v "$cmd" &>/dev/null || missing+=("$cmd")
     done
     if [[ ${#missing[@]} -gt 0 ]]; then
         echo "❌ Dipendenze mancanti: ${missing[*]}"
-        echo "   Installale con il gestore pacchetti della tua distribuzione."
+        echo "   Installale con il gestore pacchetti della tua distribuzione e riprova."
         exit 1
     fi
 }
@@ -115,7 +118,78 @@ version_compare() {
     CMP_RESULT="same"
 }
 
-# --- CONFIG ---
+# sudo con errore visibile
+sudox() {
+    if ! sudo "$@"; then
+        echo "❌ Comando sudo fallito: sudo $*"
+        echo "   Serve una password o permessi adeguati per scrivere in ${INSTALL_DIR}."
+        exit 1
+    fi
+}
+
+# ============================================================
+#   SORGENTE DA INSTALLARE: SEMPRE IL FILE CHE STAI ESEGUENDO
+# ============================================================
+SRC_FILE=""
+
+resolve_source() {
+    if [[ -f "$0" && -r "$0" && ! "$0" =~ ^(bash|-bash|/bin/bash|/usr/bin/bash)$ ]]; then
+        SRC_FILE="$(readlink -f "$0")"
+        echo "→ Sorgente: ${SRC_FILE} (v$(grep -m1 '^VERSION=' "$SRC_FILE" | cut -d= -f2 | tr -d '"'))"
+    else
+        # Caso pipe (curl | bash): il file non esiste su disco -> scarico dal remoto,
+        # MA verifico che sia una versione sensata prima di installare.
+        echo "→ Esecuzione da pipe: scarico la versione remota..."
+        local tmpfile remote_version
+        tmpfile=$(mktemp)
+        if ! curl -fsSL --connect-timeout 15 --max-time 60 -o "$tmpfile" "$REMOTE_URL"; then
+            rm -f "$tmpfile"
+            echo "❌ Download fallito: $REMOTE_URL"
+            echo "   Alternativa: scarica lo script con curl -o e lancialo con './script.sh install'."
+            exit 1
+        fi
+        if ! head -1 "$tmpfile" | grep -q "bash"; then
+            rm -f "$tmpfile"
+            echo "❌ Il file remoto non è uno script bash valido."
+            exit 1
+        fi
+        remote_version=$(grep -m1 '^VERSION=' "$tmpfile" | cut -d= -f2 | tr -d '"' || echo "")
+        if [[ -z "$remote_version" ]]; then
+            rm -f "$tmpfile"
+            echo "❌ Il file remoto non contiene un numero di versione valido."
+            echo "   Probabilmente il repository non è aggiornato: scarica lo script manualmente."
+            exit 1
+        fi
+        echo "   Versione remota: v${remote_version} (eseguita: v${VERSION})"
+        if version_compare "$remote_version" "$VERSION"; then
+            [[ "$CMP_RESULT" == "older" ]] && {
+                rm -f "$tmpfile"
+                echo "❌ ATTENZIONE: il repository contiene una versione PIÙ VECCHIA (v${remote_version}) di quella eseguita (v${VERSION})."
+                echo "   Installazione annullata per non sovrascrivere con codice obsoleto."
+                echo "   Aggiorna il repository o lancia lo script da un file locale."
+                exit 1
+            }
+        fi
+        SRC_FILE="$tmpfile"
+        KEEP_SRC=false
+    fi
+    KEEP_SRC=true
+}
+
+install_manager() {
+    echo "→ Copia del manager in ${MANAGER_PATH}..."
+    sudox mkdir -p "$INSTALL_DIR"
+    sudox cp "$SRC_FILE" "$MANAGER_PATH"
+    sudox chmod 755 "$MANAGER_PATH"
+    [[ -f "$MANAGER_PATH" ]] || { echo "❌ Il manager NON è stato copiato: $MANAGER_PATH"; exit 1; }
+    echo "  ✓ Manager installato: $MANAGER_PATH"
+    [[ "${KEEP_SRC:-true}" == false && -n "${SRC_FILE}" ]] && rm -f "$SRC_FILE"
+    true
+}
+
+# ============================================================
+#   CONFIG
+# ============================================================
 set_config_defaults() {
     NTFY_URL="https://ntfy.sh"
     NTFY_TOPIC="${1:-}"
@@ -189,6 +263,7 @@ write_config() {
         done
         echo ")"
     } > "$CONF_FILE"
+    [[ -s "$CONF_FILE" ]] || { echo "❌ Config non scritta: $CONF_FILE"; exit 1; }
 }
 
 # ============================================================
@@ -400,6 +475,7 @@ write_updater_scripts() {
 #!/usr/bin/env bash
 # Aggiorna le liste IP e rigenera ipfilter.dat (gestione intervalli interna)
 set -euo pipefail
+trap 'echo "" >&2; echo "❌ ERRORE list-update alla riga $LINENO" >&2; exit 1' ERR
 
 CONFIG_DIR="__CONFIG_DIR__"
 CONF_FILE="${CONFIG_DIR}/blocklist.conf"
@@ -483,7 +559,6 @@ re_pair   = re.compile(rf'^({IP})\s*,\s*({IP})')
 re_cidr   = re.compile(rf'^({IP})(?:/(\d{{1,2}}))?')
 
 def emit(line, name, out):
-    # rimuove commenti #, ;, // e spazi
     for sep in ('#', ';', '//'):
         line = line.split(sep)[0]
     line = line.strip()
@@ -532,6 +607,12 @@ for entry in "${ACTIVE_BLOCKLISTS[@]}"; do
     fi
 done
 
+if [[ $SUCCESS -eq 0 ]]; then
+    log "!!! NESSUNA lista scaricata: ipfilter.dat NON aggiornato. Rimane quello esistente."
+    notify "qBittorrent Blocklist" "❌ Nessuna lista scaricata: filtro NON aggiornato." "error"
+    exit 1
+fi
+
 new_hash=$(grep -v '^# Updated:' "$OUTPUT_FILE" | sha256sum | cut -d' ' -f1)
 old_hash=$(grep '^LIST_HASH=' "$STATE_FILE" 2>/dev/null | cut -d= -f2 || echo "")
 
@@ -568,6 +649,7 @@ LIST_UPDATER
 #!/usr/bin/env bash
 # Controlla se esiste una nuova versione dello script manager (check orario, intervallo interno)
 set -euo pipefail
+trap 'echo "" >&2; echo "❌ ERRORE script-check alla riga $LINENO" >&2; exit 1' ERR
 
 MANAGER_NAME="__MANAGER_NAME__"
 CONFIG_DIR="__CONFIG_DIR__"
@@ -664,51 +746,77 @@ CHECK_UPDATER
     sed -i "s|__REMOTE_URL__|${REMOTE_URL}|g" "${dir}/${CHECK_APP}.sh"
     sed -i "s|__MANAGER_NAME__|${MANAGER_NAME}|g" "${dir}/${CHECK_APP}.sh"
 
-    sudo mkdir -p "$INSTALL_DIR"
-    sudo cp "${dir}/${LIST_APP}.sh" "$LIST_SCRIPT"
-    sudo cp "${dir}/${CHECK_APP}.sh" "$CHECK_SCRIPT"
-    sudo chmod 755 "$LIST_SCRIPT" "$CHECK_SCRIPT"
+    # Verifica che i placeholder siano stati sostituiti
+    if grep -q '__CONFIG_DIR__\|__VERSION__\|__REMOTE_URL__\|__MANAGER_NAME__' \
+        "${dir}/${LIST_APP}.sh" "${dir}/${CHECK_APP}.sh"; then
+        echo "❌ Placeholder non sostituiti negli updater: installazione annullata."
+        rm -rf "$dir"
+        exit 1
+    fi
+
+    sudox mkdir -p "$INSTALL_DIR"
+    sudox cp "${dir}/${LIST_APP}.sh" "$LIST_SCRIPT"
+    sudox cp "${dir}/${CHECK_APP}.sh" "$CHECK_SCRIPT"
+    sudox chmod 755 "$LIST_SCRIPT" "$CHECK_SCRIPT"
+    [[ -f "$LIST_SCRIPT" && -f "$CHECK_SCRIPT" ]] || { echo "❌ Updater non copiati in ${INSTALL_DIR}"; rm -rf "$dir"; exit 1; }
     rm -rf "$dir"
+    echo "  ✓ Updater generati: ${LIST_SCRIPT}, ${CHECK_SCRIPT}"
 }
 
-# --- BOOTSTRAP (installazione via pipe) ---
-# Scatta quando lo script è eseguito da pipe (es. curl | bash): $0 è "bash"
-# e stdin non è un terminale. Anche senza argomento "install" procede.
-bootstrap_if_piped() {
-    local cmd="${1:-help}"
-    local is_piped=0
-    [[ ! -t 0 ]] && is_piped=1
-    if { [[ "$cmd" == "install" ]] || { [[ "$cmd" == "help" ]] && (( is_piped )); }; } \
-       && { [[ ! -f "$0" ]] || [[ "$0" == "bash" || "$0" == "-bash" || "$0" == "/usr/bin/bash" || "$0" == "/bin/bash" ]]; }; then
-        echo "→ Installazione da remoto..."
-        local tmpfile
-        tmpfile=$(mktemp)
-        if ! curl -fsSL --connect-timeout 30 --max-time 60 -o "$tmpfile" "$REMOTE_URL"; then
-            rm -f "$tmpfile"; echo "❌ Download fallito: $REMOTE_URL"; exit 1
-        fi
-        if ! head -1 "$tmpfile" | grep -q "bash"; then
-            rm -f "$tmpfile"; echo "❌ File scaricato non valido."; exit 1
-        fi
-        sudo mkdir -p "$INSTALL_DIR"
-        sudo cp "$tmpfile" "$MANAGER_PATH"
-        sudo chmod 755 "$MANAGER_PATH"
-        rm -f "$tmpfile"
-        echo "  ✓ Installato in: $MANAGER_PATH"
-        echo ""
-        exec "${MANAGER_PATH}" install
+# ============================================================
+#   CRON
+# ============================================================
+add_cron_line() {
+    local tag="$1" script="$2"
+    crontab -l 2>/dev/null | grep -vF "$tag" | crontab - || true
+    if ! (crontab -l 2>/dev/null; echo "${CRON_SCHEDULE} ${script} >> ${LOG_FILE} 2>&1 ${tag}") | crontab -; then
+        echo "❌ Impossibile scrivere il crontab per ${script}."
+        exit 1
     fi
+    crontab -l 2>/dev/null | grep -qF "$tag" || {
+        echo "❌ La voce cron per ${script} non risulta nel crontab."
+        exit 1
+    }
+}
+
+# ============================================================
+#   VERIFICA FINALE INSTALLAZIONE
+# ============================================================
+verify_install() {
+    local problems=0 line
+
+    for line in \
+        "manager|$MANAGER_PATH" \
+        "updater liste|$LIST_SCRIPT" \
+        "updater check|$CHECK_SCRIPT" \
+        "config|$CONF_FILE" \
+        "stato liste|$STATE_FILE" \
+        "log|$LOG_FILE"; do
+        local label="${line%%|*}" path="${line##*|}"
+        if [[ -f "$path" ]]; then
+            echo "  ✓ ${label}: ${path}"
+        else
+            echo "  ❌ MANCA ${label}: ${path}"
+            problems=$((problems+1))
+        fi
+    done
+
+    [[ -f "$OUTPUT_FILE" ]] && echo "  ✓ ipfilter.dat: ${OUTPUT_FILE}" || { echo "  ❌ MANCA ipfilter.dat: ${OUTPUT_FILE}"; problems=$((problems+1)); }
+
+    crontab -l 2>/dev/null | grep -qF "$CRON_TAG_LIST" && echo "  ✓ cron liste: presente" || { echo "  ❌ cron liste ASSENTE"; problems=$((problems+1)); }
+    crontab -l 2>/dev/null | grep -qF "$CRON_TAG_CHECK" && echo "  ✓ cron check: presente" || { echo "  ❌ cron check ASSENTE"; problems=$((problems+1)); }
+
+    echo ""
+    if (( problems > 0 )); then
+        echo " ❌ INSTALLAZIONE INCOMPLETA: ${problems} problema/i sopra. Correggili e riesegui '${MANAGER_NAME} install'."
+        exit 1
+    fi
+    echo " ✅ Verifica installazione: tutti i componenti presenti."
 }
 
 # ============================================================
 #   COMANDI
 # ============================================================
-add_cron_line() {
-    local tag="$1" script="$2"
-    # rimuove eventuale riga precedente con lo stesso tag
-    crontab -l 2>/dev/null | grep -vF "$tag" | crontab - || true
-    (crontab -l 2>/dev/null; echo "${CRON_SCHEDULE} ${script} >> ${LOG_FILE} 2>&1 ${tag}") | crontab -
-}
-
 cmd_install() {
     echo ""
     echo "╔══════════════════════════════════════════════════╗"
@@ -717,6 +825,24 @@ cmd_install() {
     echo ""
     echo " Utente configurazione: ${REAL_USER} (${CONFIG_DIR})"
 
+    echo "→ Verifica dipendenze..."
+    check_deps
+    echo "  ✓ OK"
+
+    echo "→ Determinazione sorgente..."
+    resolve_source
+
+    echo "→ Installazione manager..."
+    install_manager
+
+    # Da qui in avanti rilanciamo SEMPRE l'installazione dal file installato,
+    # così l'utente lavora con il manager ufficiale, non con l'istanza temporanea.
+    if [[ "$0" != "$MANAGER_PATH" ]]; then
+        echo ""
+        echo "→ Relaunch dal manager installato..."
+        exec "$MANAGER_PATH" install
+    fi
+
     if [[ -f "$CONF_FILE" ]]; then
         echo "⚠️  Installazione già presente."
         local overwrite; overwrite=$(ask "   Sovrascrivere? [y/N] ")
@@ -724,13 +850,9 @@ cmd_install() {
         echo ""
     fi
 
-    echo "→ Verifica dipendenze..."
-    check_deps
-    echo "  ✓ OK"
-
     mkdir -p "$CONFIG_DIR" "$BLOCKLIST_DIR"
     touch "$LOG_FILE"
-    echo "  ✓ Directory create"
+    echo "  ✓ Directory create in ${CONFIG_DIR}"
 
     echo "→ Generazione topic ntfy..."
     local topic; topic=$(generate_topic)
@@ -739,18 +861,15 @@ cmd_install() {
     set_config_defaults "$topic"
     run_wizard
     write_config
-    echo ""
     echo "  ✓ Config salvata: $CONF_FILE"
 
     echo "→ Installazione updater (liste + check script)..."
     write_updater_scripts
-    echo "  ✓ $LIST_SCRIPT"
-    echo "  ✓ $CHECK_SCRIPT"
 
     echo "→ Configurazione cron (due voci, tick orario)..."
     add_cron_line "$CRON_TAG_LIST" "$LIST_SCRIPT"
     add_cron_line "$CRON_TAG_CHECK" "$CHECK_SCRIPT"
-    echo "  ✓ Cron liste attivo  (ogni ${LIST_UPDATE_INTERVAL}h)"
+    echo "  ✓ Cron liste attivo  (agg. ogni ${LIST_UPDATE_INTERVAL}h)"
     echo "  ✓ Cron script attivo (check ogni ${SCRIPT_UPDATE_INTERVAL}h)"
 
     cat > "$META_FILE" << METAEOF
@@ -764,8 +883,11 @@ METAEOF
 
     echo ""
     echo "→ Esecuzione primo aggiornamento liste..."
+    "$LIST_SCRIPT" || echo "  ⚠️  Primo aggiornamento con problemi: controlla il log (${LOG_FILE}). Il cron riproverà."
+
     echo ""
-    "$LIST_SCRIPT"
+    echo "→ VERIFICA FINALE DELL'INSTALLAZIONE"
+    verify_install
 
     echo ""
     echo "════════════════════════════════════════════════════"
@@ -811,8 +933,8 @@ cmd_uninstall() {
     [[ $removed -eq 0 ]] && echo "  – Nessun cron presente"
 
     echo "→ Rimozione updater..."
-    if [[ -f "$LIST_SCRIPT" ]]; then sudo rm -f "$LIST_SCRIPT"; echo "  ✓ $LIST_SCRIPT rimosso"; else echo "  – Non trovato"; fi
-    if [[ -f "$CHECK_SCRIPT" ]]; then sudo rm -f "$CHECK_SCRIPT"; echo "  ✓ $CHECK_SCRIPT rimosso"; else echo "  – Non trovato"; fi
+    if [[ -f "$LIST_SCRIPT" ]]; then sudox rm -f "$LIST_SCRIPT"; echo "  ✓ $LIST_SCRIPT rimosso"; else echo "  – Non trovato"; fi
+    if [[ -f "$CHECK_SCRIPT" ]]; then sudox rm -f "$CHECK_SCRIPT"; echo "  ✓ $CHECK_SCRIPT rimosso"; else echo "  – Non trovato"; fi
 
     echo ""
     local confirm; confirm=$(ask "→ Rimuovere ipfilter.dat, config, stati e liste? [y/N] ")
@@ -831,7 +953,7 @@ cmd_uninstall() {
 
     echo ""
     local confirm_self; confirm_self=$(ask "→ Rimuovere anche il manager (${MANAGER_PATH})? [y/N] ")
-    if [[ "$confirm_self" =~ ^[Yy]$ ]]; then sudo rm -f "$MANAGER_PATH"; echo "  ✓ Manager rimosso"; else echo "  – Manager conservato"; fi
+    if [[ "$confirm_self" =~ ^[Yy]$ ]]; then sudox rm -f "$MANAGER_PATH"; echo "  ✓ Manager rimosso"; else echo "  – Manager conservato"; fi
 
     echo ""
     echo " ✅ DISINSTALLAZIONE COMPLETATA"
@@ -921,7 +1043,7 @@ cmd_update() {
         rm -f "$tmpfile"; echo "❌ Download fallito."; exit 1
     fi
     head -1 "$tmpfile" | grep -q "bash" || { rm -f "$tmpfile"; echo "❌ File non valido."; exit 1; }
-    sudo cp "$tmpfile" "$MANAGER_PATH"; sudo chmod 755 "$MANAGER_PATH"; rm -f "$tmpfile"
+    sudox cp "$tmpfile" "$MANAGER_PATH"; sudox chmod 755 "$MANAGER_PATH"; rm -f "$tmpfile"
     echo "  ✓ Aggiornato a v${remote_version}"
     echo ""
     echo " ⚠️  Per rigenerare gli updater con la nuova versione:"
@@ -947,14 +1069,26 @@ Uso: ${MANAGER_NAME} <comando>
   version    Mostra la versione installata
   help       Mostra questa guida
 
+Installazione da pipe:
+  curl -fsSL ${REMOTE_URL} | bash
+Oppure (consigliato, usa il file scaricato senza ri-download):
+  curl -fsSL ${REMOTE_URL} -o qbbm.sh && bash qbbm.sh install
+
 EOF
 }
 
 # --- ENTRY POINT ---
-bootstrap_if_piped "${1:-help}"
-
 case "${1:-help}" in
-    install)   cmd_install ;;
+    install)
+        # Se siamo in pipe (stdin non tty e $0 è bash): risolvi sorgente, installa manager, exec
+        if { [[ ! -f "$0" ]] || [[ "$0" == "bash" || "$0" == "-bash" || "$0" == "/bin/bash" || "$0" == "/usr/bin/bash" ]]; }; then
+            check_deps
+            resolve_source
+            install_manager
+            exec "$MANAGER_PATH" install
+        fi
+        cmd_install
+        ;;
     settings)  cmd_settings ;;
     uninstall) cmd_uninstall ;;
     status)    cmd_status ;;
